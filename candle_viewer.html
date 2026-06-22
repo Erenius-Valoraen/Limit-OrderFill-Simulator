@@ -1,0 +1,174 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>NQ 1s Candles</title>
+<!-- TradingView Lightweight Charts v4.1.3 — local copy (vendored), CDN fallback. -->
+<script src="lightweight-charts.standalone.production.js"></script>
+<script>
+  if (!window.LightweightCharts) {
+    document.write('<scr' + 'ipt src="https://unpkg.com/lightweight-charts@4.1.3/dist/lightweight-charts.standalone.production.js"></scr' + 'ipt>');
+  }
+</script>
+<style>
+  :root { --bg:#0e0f14; --bg2:#161922; --border:#262b36; --text0:#e6e8ec; --text2:#8b93a7;
+          --up:#26a69a; --down:#ef5350; --accent:#4c8dff; }
+  * { box-sizing:border-box; }
+  html,body { margin:0; height:100%; background:var(--bg); color:var(--text0);
+              font-family:ui-monospace,"SF Mono",Menlo,Consolas,monospace; }
+  #bar { display:flex; align-items:center; gap:18px; padding:8px 14px;
+         border-bottom:1px solid var(--border); background:var(--bg2); flex-wrap:wrap; }
+  #bar b { color:var(--text0); }
+  .muted { color:var(--text2); }
+  select { background:var(--bg); color:var(--text0); border:1px solid var(--border);
+           border-radius:4px; padding:5px 8px; font:inherit; cursor:pointer; }
+  label.file { background:var(--accent); color:#fff; border-radius:4px; padding:6px 12px;
+               cursor:pointer; font-size:12px; }
+  label.file input { display:none; }
+  #legend { font-size:12px; letter-spacing:.2px; }
+  #legend .v { color:var(--text0); }
+  #wrap { position:absolute; top:46px; left:0; right:0; bottom:0; }
+  #drop { position:absolute; inset:46px 0 0 0; display:flex; align-items:center;
+          justify-content:center; flex-direction:column; gap:10px; color:var(--text2);
+          text-align:center; padding:30px; }
+  #drop.hide { display:none; }
+  #drop .big { font-size:15px; color:var(--text0); }
+  #drop.over { background:#12161f; outline:2px dashed var(--accent); outline-offset:-12px; }
+  #status { font-size:12px; }
+  #status.err { color:var(--down); }
+</style>
+</head>
+<body>
+  <div id="bar">
+    <b id="title">NQ — 1s candles</b>
+    <label class="file">Load candles.csv<input id="file" type="file" accept=".csv,text/csv"></label>
+    <label class="muted">Day <select id="day"><option>—</option></select></label>
+    <span class="muted">times in ET</span>
+    <span id="status" class="muted"></span>
+    <span id="legend" class="muted"></span>
+  </div>
+  <div id="wrap"></div>
+  <div id="drop">
+    <div class="big">Drop <b>candles.csv</b> here, or click “Load candles.csv”.</div>
+    <div>Columns expected: <code>date,time_et,open,high,low,close,volume</code></div>
+  </div>
+
+<script>
+(function () {
+  const statusEl = document.getElementById('status');
+  const drop = document.getElementById('drop');
+  function setStatus(msg, err) { statusEl.textContent = msg; statusEl.className = err ? 'err' : 'muted'; }
+
+  if (!window.LightweightCharts) {
+    setStatus('Lightweight Charts CDN failed to load — check internet.', true);
+    return;
+  }
+
+  const chart = LightweightCharts.createChart(document.getElementById('wrap'), {
+    layout:    { background:{ color:'#0e0f14' }, textColor:'#8b93a7' },
+    grid:      { vertLines:{ color:'#1b1f29' }, horzLines:{ color:'#1b1f29' } },
+    crosshair: { mode: LightweightCharts.CrosshairMode.Normal },
+    rightPriceScale: { borderColor:'#262b36' },
+    timeScale: { borderColor:'#262b36', timeVisible:true, secondsVisible:true },
+  });
+  const candle = chart.addCandlestickSeries({
+    upColor:'#26a69a', downColor:'#ef5350', borderUpColor:'#26a69a',
+    borderDownColor:'#ef5350', wickUpColor:'#26a69a', wickDownColor:'#ef5350',
+    priceFormat:{ type:'price', precision:2, minMove:0.25 },
+  });
+  const vol = chart.addHistogramSeries({ priceFormat:{ type:'volume' }, priceScaleId:'vol' });
+  chart.priceScale('vol').applyOptions({ scaleMargins:{ top:0.85, bottom:0 } });
+
+  const sel = document.getElementById('day');
+  const legend = document.getElementById('legend');
+  const fmt = p => Number(p).toFixed(2);
+  let DAYS = {};      // date -> [[t,o,h,l,c,v], ...]
+  let ORDER = [];
+
+  // Parse "date,time_et,open,high,low,close,volume". The ET wall-clock time is
+  // reinterpreted as UTC so the chart axis reads New-York time (same trick the
+  // generator used). Robust to a header row and blank trailing lines.
+  function parseCSV(text) {
+    const days = {};
+    const lines = text.split(/\r?\n/);
+    let bad = 0;
+    for (let i = 0; i < lines.length; i++) {
+      const ln = lines[i];
+      if (!ln) continue;
+      const p = ln.split(',');
+      if (p.length < 7) continue;
+      if (p[0] === 'date') continue;                 // header
+      const dm = p[0].split('-'), tm = p[1].split(':');
+      if (dm.length !== 3 || tm.length !== 3) { bad++; continue; }
+      const t = Date.UTC(+dm[0], +dm[1] - 1, +dm[2], +tm[0], +tm[1], +tm[2]) / 1000;
+      const o = +p[2], h = +p[3], l = +p[4], c = +p[5], v = +p[6];
+      if (!Number.isFinite(t) || !Number.isFinite(o)) { bad++; continue; }
+      (days[p[0]] || (days[p[0]] = [])).push([t, o, h, l, c, v]);
+    }
+    return { days, bad };
+  }
+
+  function loadDay(date) {
+    const rows = DAYS[date] || [];
+    const c = new Array(rows.length), vv = new Array(rows.length);
+    for (let k = 0; k < rows.length; k++) {
+      const a = rows[k];
+      c[k]  = { time:a[0], open:a[1], high:a[2], low:a[3], close:a[4] };
+      vv[k] = { time:a[0], value:a[5], color: a[4] >= a[1] ? 'rgba(38,166,154,.4)' : 'rgba(239,83,80,.4)' };
+    }
+    candle.setData(c);
+    vol.setData(vv);
+    chart.timeScale().fitContent();
+    legend.innerHTML = `<span class="muted">${date} — ${rows.length.toLocaleString()} candles</span>`;
+  }
+
+  function ingest(text) {
+    setStatus('parsing…');
+    const { days, bad } = parseCSV(text);
+    ORDER = Object.keys(days).sort();
+    if (!ORDER.length) { setStatus('No valid rows found in CSV.', true); return; }
+    DAYS = days;
+    // each day's rows are already in file order (chronological); ensure sorted
+    for (const d of ORDER) days[d].sort((a, b) => a[0] - b[0]);
+    sel.innerHTML = '';
+    for (const d of ORDER) {
+      const o = document.createElement('option');
+      o.value = d; o.textContent = `${d}  (${days[d].length.toLocaleString()})`;
+      sel.appendChild(o);
+    }
+    drop.classList.add('hide');
+    const total = ORDER.reduce((s, d) => s + days[d].length, 0);
+    setStatus(`${ORDER.length} day(s), ${total.toLocaleString()} candles${bad ? `, ${bad} skipped` : ''}`);
+    sel.value = ORDER[0];
+    loadDay(ORDER[0]);
+  }
+
+  function readFile(file) {
+    if (!file) return;
+    setStatus(`reading ${file.name} (${(file.size/1e6).toFixed(1)} MB)…`);
+    const r = new FileReader();
+    r.onload = () => ingest(String(r.result));
+    r.onerror = () => setStatus('Could not read file.', true);
+    r.readAsText(file);
+  }
+
+  document.getElementById('file').addEventListener('change', e => readFile(e.target.files[0]));
+  sel.addEventListener('change', () => loadDay(sel.value));
+
+  // drag & drop
+  ['dragenter','dragover'].forEach(ev => drop.addEventListener(ev, e => {
+    e.preventDefault(); drop.classList.add('over');
+  }));
+  ['dragleave','drop'].forEach(ev => drop.addEventListener(ev, e => {
+    e.preventDefault(); drop.classList.remove('over');
+  }));
+  drop.addEventListener('drop', e => { if (e.dataTransfer.files[0]) readFile(e.dataTransfer.files[0]); });
+  window.addEventListener('dragover', e => e.preventDefault());
+  window.addEventListener('drop', e => e.preventDefault());
+
+  new ResizeObserver(() => chart.applyOptions({})).observe(document.getElementById('wrap'));
+})();
+</script>
+</body>
+</html>
