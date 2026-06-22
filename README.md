@@ -1,16 +1,132 @@
 # Binance Fill Simulator
 
-A limit-order **fill-simulation and strategy-research platform** for high-frequency / market-making experiments, built on live Level-2 market data. It reconstructs an exchange order book from a live feed, simulates realistic queue-based execution of resting limit orders, runs research-grounded trading strategies against that simulated fill engine, and supports lookahead-bias-free replay of historical data — all without placing a single real trade.
+A limit-order **fill-simulation and strategy-research platform** for high-frequency / market-making experiments, built on live Level-2 market data. It reconstructs an exchange order book from a live feed, simulates **queue-aware** execution of resting limit orders, runs research-grounded strategies against that fill engine, and supports lookahead-bias-free replay of historical data — without placing a single real trade.
 
-> ⚠️ **Paper trading only.** Every fill in this project is simulated. Nothing here connects to a live exchange for real order execution, and none of it is financial advice or a profitable trading system. The strategies are research-backed experiments, not guarantees.
+> ⚠️ **Paper trading only.** Every fill is simulated. Nothing here executes real orders, and none of it is financial advice or a profitable trading system. The strategies are research-backed experiments, not guarantees.
 
-## Why it exists
+## The core problem: would my limit order actually have filled?
 
-The hard part of testing a passive (limit-order) strategy isn't the signal — it's knowing *whether your order would actually have filled*. A resting limit order's fill depends on queue position, cancellations ahead of you, and whether the book trades through your price, none of which a naive backtest captures. This project's core is a **queue-aware fill engine** that models those mechanics against real market-by-price data, so strategies can be evaluated under realistic execution assumptions.
+For an aggressive (market) order, simulated execution is easy — walk the book and consume liquidity. For a **passive (resting limit) order**, it's the hard problem in execution simulation, because a fill depends on your **queue position**, which the exchange never tells you. Binance (like most venues) broadcasts **market-by-price (MBP)** data: the *aggregate* size at each price level, not the individual orders or their order IDs. So you can see "there are 4.2 BTC bid at 67,000" but not whether your 0.1 BTC sits 1st or 400th in that queue.
+
+The entire fill engine is built around **estimating queue position from MBP data** and updating that estimate as the book and trade streams evolve. This is the technically interesting part of the project, so it's documented in full below.
+
+## Queue & fill model
+
+Each resting order tracks, beyond the obvious fields:
+
+| Field | Meaning |
+|---|---|
+| `queueAhead` | estimated aggregate quantity resting **ahead** of us at our price |
+| `lastLevelQty` | last observed aggregate size at our price level (to detect deltas) |
+| `pendingTradeDepletion` | trade volume seen at our price, waiting to be reconciled against a depth decrease |
+| `pendingTradeDepletionTs` | timestamp for expiring stale pending-trade volume (1 s TTL) |
+| `recentCancelAdvance` | queue advancement we *attributed to cancels*, held briefly in case a delayed trade explains it instead |
+| `recentCancelAdvanceTs` | timestamp for the 250 ms delayed-trade correction window |
+
+Tunable constants:
+
+```js
+QUEUE_EPS = 1e-10;                 // float-noise threshold
+QUEUE_CANCEL_BEHIND_BIAS = 1.35;   // >1 ⇒ cancels biased to occur behind us
+state.latencyMs = 100;             // simulated order round-trip latency
+```
+
+### 1. Queue initialisation (FIFO back-of-queue assumption)
+
+When an order is placed at price `P`, `queueAhead` is initialised to the **current aggregate size at `P`**:
+
+```
+queueAhead = state.bids[P]   (for a BUY)   or   state.asks[P]   (for a SELL)
+```
+
+This encodes the assumption that we join at the **back** of the existing FIFO queue — the most pessimistic and most realistic default, since we cannot have priority over orders already resting there.
+
+### 2. Passive trade fills
+
+On every `aggTrade`, an order at price `P` is eligible to fill if the trade is an **opposing aggressor that reaches our price**:
+
+- BUY limit at `P` fills against a **SELL** aggressor trading at `price ≤ P`
+- SELL limit at `P` fills against a **BUY** aggressor trading at `price ≥ P`
+
+Two cases:
+
+- **Trade price strictly better than our limit** (e.g. a sell prints at 66,999 while our BUY rests at 67,000): the market has traded *through* us, so we fill immediately for `min(tradeQty, remainingQty)` with **no queue cost** — anything trading at a better price than ours must clear our level first.
+- **Trade at exactly our price**: the trade first **burns down `queueAhead`** (orders ahead of us fill before we do). Only the **leftover** after the queue is exhausted fills our order:
+
+```
+burned   = min(queueAhead, tradeQty)
+queueAhead -= burned
+leftover = tradeQty - burned
+fillQty  = min(leftover, remainingQty)   // only if leftover > 0
+```
+
+This is the FIFO priority rule made explicit: volume at your price serves the front of the queue first.
+
+### 3. Queue advancement from cancellations (the probabilistic core)
+
+The subtle part. When the aggregate size at our level **decreases**, that drop has two possible causes:
+
+1. **Trades** at our price (already handled above), or
+2. **Cancellations / size reductions** by other resting orders.
+
+Only cancellations *ahead* of us advance our queue position; cancellations *behind* us don't help. But MBP data doesn't say which. The engine separates the two and then estimates the split:
+
+**Step A — subtract trade-explained volume.** Trade volume seen at our price is accumulated in `pendingTradeDepletion`. When a depth decrease arrives, that portion is attributed to trades first (and not double-counted), with a 1 s TTL so stale trade volume expires:
+
+```
+levelDrop     = prevLevelQty - nextLevelQty
+tradeExplained = min(levelDrop, pendingTradeDepletion)
+cancelQty      = levelDrop - tradeExplained
+```
+
+**Step B — estimate how much of the cancelled size was ahead of us.** The remaining `cancelQty` is split using a size-weighted probability. With `front = queueAhead` and `behind = nextLevelQty − front`:
+
+```
+uniformProb = log1p(front) / ( log1p(front) + log1p(behind) )
+aheadProb   = uniformProb ^ QUEUE_CANCEL_BEHIND_BIAS      // bias exponent = 1.35
+aheadCancelled = min(queueAhead, cancelQty * aheadProb)
+queueAhead -= aheadCancelled
+```
+
+The reasoning behind each piece:
+
+- **`log1p` weighting, not linear.** A purely proportional split (`front / total`) overstates how often the cancel lands ahead of us when the queue is deep. Using `log1p(size)` compresses large sizes so the probability responds to *relative* depth without being dominated by one huge level. It also handles the `front = 0` and `behind = 0` edge cases cleanly (returns 0 and 1 respectively).
+- **The behind-bias exponent (1.35 > 1).** Raising a probability in (0,1) to a power > 1 pushes it **down**, so cancels are made slightly *more* likely to occur behind us than a neutral model would predict. This is deliberately conservative: it prevents the simulator from unrealistically yanking our order to the front of the queue every time someone cancels, which would inflate fill rates and flatter the strategy.
+- **Clamp.** `queueAhead` is finally clamped to `≤ nextLevelQty` — our position ahead can never exceed the total size now resting at the level.
+
+### 4. Delayed-trade / depth-ordering correction
+
+Depth and trade messages arrive on the same combined socket but **not in guaranteed order** — a depth decrease can land *before* the trade message that caused it. Without a guard, the engine would (a) advance the queue via the cancel model when the depth drop arrived, then (b) burn the queue *again* when the trade finally arrived — double-counting the same volume.
+
+The fix is a **250 ms reconciliation window**:
+
+- Whenever the cancel model advances the queue, that amount is recorded in `recentCancelAdvance` with a timestamp.
+- When a trade at our price arrives within 250 ms, its quantity is first netted against `recentCancelAdvance` (`effectiveTradeQty -= alreadyAdvanced`) before being used to burn the queue.
+
+So volume that already advanced us as a "cancel" can't also fill us as a "trade." This is the kind of cross-stream consistency bug that quietly inflates simulated fills, and it's handled explicitly.
+
+### 5. Book-sweep fills
+
+Separately from trade-driven fills, `handleBookUpdate()` fills a resting order if the **book itself moves through its price** and the order is already at the front (`queueAhead == 0`):
+
+- BUY at `P` sweeps if `bestAsk < P`
+- SELL at `P` sweeps if `bestBid > P`
+
+A **100 ms grace period** (`Date.now() - placedAt < 200` guard, plus the latency model) excludes freshly-placed orders, so an order joined at the current best isn't swept before any real book movement occurs.
+
+### 6. Market orders & latency
+
+Market orders are filled by walking up to 20 levels of the opposite side and computing a **size-weighted VWAP**, after a simulated `latencyMs` round-trip delay — modelling the reality that your order reaches the matching engine some milliseconds after you press the button.
+
+## Order book maintenance
+
+The book is kept correct via the standard Binance snapshot+diff protocol, with two correctness details worth noting:
+
+- **Float-keyed levels.** `state.bids` / `state.asks` are keyed by `parseFloat(price)`, never the raw exchange string, because `"67000.10"` and `Number("67000.10").toString() → "67000.1"` would otherwise miss each other and silently corrupt the book.
+- **Snapshot/diff sequencing.** Depth diffs that arrive before the REST snapshot are buffered and replayed in order; diffs older than the snapshot's `lastUpdateId` are discarded.
+- **Connection generations.** Every `connect()` increments a generation counter; stale async callbacks (snapshot fetches, socket handlers, reconnect timers from a previous symbol) check their captured generation and no-op if superseded — preventing race conditions when switching symbols rapidly.
 
 ## System overview
-
-The platform has five parts that share one fill model:
 
 ```
                        ┌─────────────────────────────┐
@@ -19,15 +135,13 @@ The platform has five parts that share one fill model:
                        └──────────────┬──────────────┘  order entry + JS strategies
                                       │
    ┌──────────────────────────────────┼──────────────────────────────┐
-   │                                  │                              │
    ▼                                  ▼                              ▼
 ┌─────────────────┐        ┌────────────────────┐        ┌────────────────────┐
 │ JS strategies   │        │ paper_trader.py    │        │ backtest_server.py │
 │ (3 research-    │        │ headless service:  │◄───────│ replays NT JSONL   │
 │  based algos)   │        │ live fills → disk  │        │ as Binance-shape   │
-└─────────────────┘        └────────────────────┘        │ feeds (no lookahead)│
+└─────────────────┘        └────────────────────┘        │ feeds, no lookahead│
                                       ▲                   └─────────┬──────────┘
-                                      │                             │
                            ┌──────────┴───────────┐      ┌──────────┴──────────┐
                            │ analyze_trades.py    │      │ BfsL2Exporter.cs    │
                            │ session P&L summary  │      │ NinjaTrader → JSONL │
@@ -35,39 +149,25 @@ The platform has five parts that share one fill model:
                                                          └─────────────────────┘
 ```
 
-### 1. `terminal.html` — browser fill engine
+### Components
 
-A single-file, zero-dependency browser app that connects directly to Binance Futures public WebSocket streams, renders a live order book and trade tape, and runs a **client-side queue-based fill engine**. You place resting bids/offers and the engine decides whether they fill by watching the live book and trades. It models three fill paths — passive trade fills (with a queue-depletion model), book-sweep fills, and probabilistic queue advancement when depth decreases that aren't explained by same-price trades. The fill mechanics are documented in detail in [`terminal.html`'s own README section](#fill-engine-details). No server, no build step — open the file and it runs.
-
-### 2. JavaScript strategies
-
-Three automated strategies that drive the fill engine, each grounded in published market-microstructure research:
-
-- **`orderflow_predictor_strategy.js`** — an ultra-short-horizon strategy based on **order-flow imbalance (OFI)** at the best bid/ask and across deeper book levels (Cont–Kukanov–Stoikov and multi-level OFI literature).
-- **`mean_reversion_strategy.js`** — a passive limit-order strategy that fades short-term dislocations from an adaptive EWMA fair value, using inventory-aware quoting (Avellaneda–Stoikov) and treating one-sided flow as adverse-selection risk.
-- **`auto_market_maker.js`** — an Avellaneda–Stoikov-inspired market maker with inventory limits and reservation-price quoting.
-
-### 3. `paper_trader.py` — headless paper-trading service
-
-An async Python service that mirrors the browser engine's logic without a browser. It maintains the order book locally (snapshot + diff), runs the OrderFlowPredictor strategy, paper-fills against live top-of-book VWAP, and **writes every fill to disk immediately** in day-keyed JSONL + CSV, snapshotting session state after each fill so a crash or restart resumes exactly where it left off. It can read either a live Binance feed or a replay file.
-
-### 4. `backtest_server.py` — lookahead-bias-free replay
-
-Replays a historical L2 JSONL as Binance-shaped WebSocket + REST feeds, so the **exact same strategy code** runs against historical data unchanged. It is explicit about avoiding lookahead bias: events are emitted only when their scheduled wall-clock time arrives, REST snapshots reflect only already-replayed events, and the fill engine only consumes events that arrive after an order is placed — so a fill can never come from future data.
-
-### 5. `BfsL2Exporter.cs` — NinjaTrader bridge
-
-A NinjaScript indicator that streams Level-2 depth and trades from NinjaTrader to a JSONL file, enabling the replay server to test strategies on **real CME futures L2 data** (e.g. NQ) via NinjaTrader's free Market Replay. The end-to-end pipeline is documented in [`NT_REPLAY_SETUP.md`](./NT_REPLAY_SETUP.md).
-
-Supporting tools: **`analyze_trades.py`** summarizes per-day fills and P&L; **`validate_export.py`** checks exported data integrity; **`trade_analysis.html`** / **`backtest.html`** provide browser-based analysis views.
+- **`terminal.html`** — single-file, zero-dependency browser terminal: live order book + trade tape, manual order entry, and the queue-aware fill engine described above.
+- **JavaScript strategies**, each grounded in market-microstructure research:
+  - `orderflow_predictor_strategy.js` — short-horizon **order-flow imbalance (OFI)** at and beyond top-of-book (Cont–Kukanov–Stoikov; multi-level OFI).
+  - `mean_reversion_strategy.js` — passive limit-order fading of dislocations from an adaptive EWMA fair value; inventory-aware (Avellaneda–Stoikov), treats one-sided flow as adverse-selection risk.
+  - `auto_market_maker.js` — Avellaneda–Stoikov-inspired market maker with inventory limits and reservation-price quoting.
+- **`paper_trader.py`** — async headless service mirroring the browser engine; runs a strategy, paper-fills against live top-of-book VWAP, and writes every fill to disk immediately (day-keyed JSONL + CSV) with session-state snapshots for crash-safe restart. Supports live or replay data sources.
+- **`backtest_server.py`** — replays historical L2 JSONL as Binance-shaped WS+REST feeds so the **same strategy code** runs unchanged on history, with explicit lookahead-bias guarantees (events emitted only at their scheduled wall-clock time; snapshots reflect only already-replayed events; fills only consume post-placement events).
+- **`BfsL2Exporter.cs`** — NinjaScript indicator that streams real CME futures L2 depth + trades to JSONL, feeding the replay server (see `NT_REPLAY_SETUP.md`).
+- **`analyze_trades.py`** / **`validate_export.py`** / **`trade_analysis.html`** / **`backtest.html`** — P&L summarisation, export validation, and browser-based analysis.
 
 ## Tech stack
 
-- **JavaScript** — browser terminal, fill engine, and strategies (vanilla, no framework)
-- **Python (asyncio, websockets, aiohttp)** — headless paper trader and replay server
-- **C# (NinjaScript)** — NinjaTrader L2 exporter
+- **JavaScript** (vanilla) — terminal, fill engine, strategies
+- **Python** (asyncio, websockets, aiohttp) — headless trader, replay server
+- **C#** (NinjaScript) — NinjaTrader L2 exporter
 - **Binance Futures WebSocket + REST** — live market data
-- **HTML/CSS** — single-file terminal and analysis dashboards
+- **HTML/CSS** — single-file terminal and dashboards
 
 ## Getting started
 
@@ -75,42 +175,30 @@ Supporting tools: **`analyze_trades.py`** summarizes per-day fills and P&L; **`v
 pip install -r requirements.txt
 ```
 
-**Browser terminal (no setup):** open `terminal.html` in a browser. It uses public Binance data only.
-
-**Headless paper trader:**
-
 ```bash
+# Browser terminal — no setup, public data only:
+open terminal.html
+
+# Headless paper trader (fills → paper_data/):
 python paper_trader.py
-# fills are written under paper_data/ as day-keyed JSONL + CSV
-```
 
-**Backtest replay:**
+# Backtest replay:
+python backtest_server.py /path/to/replay.jsonl   # then open http://localhost:8080/
 
-```bash
-python backtest_server.py /path/to/replay.jsonl
-# then open http://localhost:8080/
-```
-
-**Analyze results:**
-
-```bash
+# Analyse a day's fills:
 python analyze_trades.py 2026-06-14
 ```
 
-## Fill engine details
+## Known limitations (read before trusting any P&L)
 
-The queue and fill mechanics — passive trade fills, the market-by-price queue-advancement model, book-sweep fills, snapshot/diff sequencing, and the known approximations — are documented in depth in the dedicated section of `terminal.html`'s README. In short: because the exchange provides market-by-price (not market-by-order) data, queue position is *estimated* rather than known, using a probabilistic model of how much cancelled size was ahead of you, with safeguards against double-counting trades and depth decreases.
-
-## Known limitations
-
-- **Queue position is approximate** — orders are assumed to join the back of the queue, and queue advancement from cancellations is modeled probabilistically, not observed.
-- **Sweep fills can be slightly optimistic** despite a grace period to prevent instant fills.
-- **Aggregated trades** collapse multiple same-price/same-ms prints, so very small fills may be attributed to one larger trade.
-- **No persistence in the browser version** — refreshing clears state. (The Python service *does* persist.)
-- **Venue-specific** — Binance USD-M futures endpoints; other venues need different adapters.
+- **Queue position is estimated, not known** — it's the whole point of the model, but it's still an estimate from MBP data. The `1.35` behind-bias and `log1p` weighting are reasonable heuristics, not ground truth.
+- **No fees, funding, or latency-of-data modelling** in the P&L — only order round-trip latency is simulated.
+- **Aggregated trades** collapse same-price/same-ms prints, so very small fills may attach to one larger trade.
+- **Browser state is in-memory** (the Python service persists; the browser doesn't).
+- **Binance USD-M futures only** — other venues need new adapters.
 
 ## Possible extensions
 
-- Add fees, latency modeling, and slippage to make simulated P&L more realistic.
-- Extend the replay server with proper out-of-sample train/test splits for strategy evaluation.
-- Add exchange adapters and hard risk limits if ever moving beyond simulation (with extreme caution).
+- Calibrate the queue model's bias parameter against a venue that *does* publish MBO (market-by-order) data, to measure how well the MBP estimate tracks true queue position.
+- Add fees, funding, and slippage to make simulated P&L economically meaningful.
+- Proper out-of-sample train/test splitting in the replay server for honest strategy evaluation.
