@@ -71,10 +71,6 @@ Supporting tools: **`analyze_trades.py`** summarizes per-day fills and P&L; **`v
 
 ## Getting started
 
-### ⚠️ Before anything: credentials
-
-This project reads credentials from a `.env` file (broker API key, client code, PIN, TOTP secret). **Never commit `.env` to version control.** Add it to `.gitignore`, keep only a `.env.example` with placeholder values in the repo, and if real credentials have ever been shared or committed, rotate them with your broker (regenerate the API key, change the PIN, and re-issue the TOTP secret).
-
 ```bash
 pip install -r requirements.txt
 ```
