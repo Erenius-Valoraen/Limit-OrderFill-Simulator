@@ -1,0 +1,64 @@
+# ──────────────────────────────────────────────────────────────
+#  Secrets — NEVER commit. Keep only a placeholder .env.example.
+# ──────────────────────────────────────────────────────────────
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+credentials.json
+secrets.json
+
+# ──────────────────────────────────────────────────────────────
+#  Generated trading data / run output
+#  (day-keyed fills, session snapshots, logs, exports)
+# ──────────────────────────────────────────────────────────────
+paper_data/
+bfs_l2_export.jsonl
+*.log
+
+# Exported trade dumps in the project root
+bfs_trades_*.json
+bfs_trades_*.csv
+trades_*.jsonl
+trades_*.csv
+session_state.json
+
+# Replay data files (large L2 captures)
+*.replay.jsonl
+nq_replay.jsonl
+
+# ──────────────────────────────────────────────────────────────
+#  Python
+# ──────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+env/
+.pytest_cache/
+.mypy_cache/
+.ipynb_checkpoints/
+ofp_cache/
+
+# ──────────────────────────────────────────────────────────────
+#  C# / NinjaTrader (BfsL2Exporter.cs build artifacts)
+# ──────────────────────────────────────────────────────────────
+bin/
+obj/
+*.user
+
+# ──────────────────────────────────────────────────────────────
+#  Editor / tooling
+# ──────────────────────────────────────────────────────────────
+.claude/
+.vscode/
+.idea/
+
+# ──────────────────────────────────────────────────────────────
+#  OS cruft
+# ──────────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+desktop.ini

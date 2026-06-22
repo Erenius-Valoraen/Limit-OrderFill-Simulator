@@ -1,0 +1,354 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Trade Analysis</title>
+<style>
+  :root {
+    --bg0:#080b10; --bg1:#0c1018; --bg2:#101520; --bg3:#151c28;
+    --border:#1e2d42; --border2:#243448; --text0:#e8eaf0; --text1:#9aaabb;
+    --text2:#5a7a9a; --text3:#334455; --bid:#00d97e; --ask:#f03c3c;
+    --accent:#00aaff; --yellow:#f0b429; --font:'JetBrains Mono', Consolas, monospace;
+  }
+  * { box-sizing:border-box; margin:0; padding:0; }
+  body { background:var(--bg0); color:var(--text0); font-family:var(--font); font-size:12px; }
+  #app { min-height:100vh; display:grid; grid-template-rows:48px auto 1fr; }
+  header { display:flex; align-items:center; gap:14px; padding:0 14px; background:var(--bg1); border-bottom:1px solid var(--border); }
+  h1 { font-size:14px; color:var(--accent); letter-spacing:.06em; text-transform:uppercase; }
+  .toolbar { display:flex; align-items:center; gap:8px; margin-left:auto; }
+  label { font-size:9px; color:var(--text3); text-transform:uppercase; letter-spacing:.09em; }
+  input, select, button {
+    background:var(--bg3); border:1px solid var(--border2); color:var(--text0);
+    font-family:var(--font); font-size:11px; padding:6px 8px; border-radius:3px;
+  }
+  input { width:76px; }
+  button { cursor:pointer; font-weight:700; color:var(--text1); }
+  button:hover { color:var(--accent); border-color:var(--accent); }
+  #clear-btn:hover { color:var(--ask); border-color:var(--ask); }
+  #summary { display:grid; grid-template-columns:repeat(8, minmax(120px,1fr)); gap:1px; background:var(--border); border-bottom:1px solid var(--border); }
+  .metric { background:var(--bg2); padding:10px 12px; min-height:58px; }
+  .metric .k { font-size:9px; color:var(--text3); text-transform:uppercase; letter-spacing:.08em; margin-bottom:4px; }
+  .metric .v { font-size:15px; font-weight:700; }
+  .pos { color:var(--bid); } .neg { color:var(--ask); } .flat { color:var(--text1); }
+  main { display:grid; grid-template-columns:1.2fr .8fr; min-height:0; }
+  #chart-wrap { padding:12px; border-right:1px solid var(--border); min-width:0; }
+  #chart { width:100%; height:420px; background:var(--bg1); border:1px solid var(--border); }
+  #side { display:flex; flex-direction:column; min-width:0; min-height:0; }
+  .panel-title { height:30px; display:flex; align-items:center; padding:0 10px; color:var(--text2); background:var(--bg2); border-bottom:1px solid var(--border); font-size:9px; text-transform:uppercase; letter-spacing:.1em; }
+  #table-wrap { overflow:auto; min-height:0; }
+  table { width:100%; border-collapse:collapse; }
+  th, td { padding:5px 8px; border-bottom:1px solid rgba(30,45,66,.55); text-align:right; white-space:nowrap; }
+  th { position:sticky; top:0; background:var(--bg2); color:var(--text3); font-size:9px; text-transform:uppercase; letter-spacing:.08em; }
+  td:first-child, th:first-child { text-align:left; }
+  .buy { color:var(--bid); font-weight:700; } .sell { color:var(--ask); font-weight:700; }
+  #notes { padding:10px 12px; color:var(--text2); line-height:1.5; border-top:1px solid var(--border); background:var(--bg1); }
+</style>
+</head>
+<body>
+<div id="app">
+  <header>
+    <h1>Post-Trade Analysis</h1>
+    <span id="status" style="color:var(--text2)"></span>
+    <div class="toolbar">
+      <label>Maker %</label><input id="maker-fee" type="number" step="0.01" value="0.02">
+      <label>Taker %</label><input id="taker-fee" type="number" step="0.01" value="0.05">
+      <label>Symbol</label><select id="symbol-filter"><option value="ALL">ALL</option></select>
+      <button id="export-btn">Export CSV</button>
+      <button id="clear-btn">Clear Saved</button>
+    </div>
+  </header>
+  <section id="summary"></section>
+  <main>
+    <section id="chart-wrap">
+      <canvas id="chart" width="1100" height="420"></canvas>
+      <div id="notes">
+        Fees are recalculated using the maker/taker percentages above. Changing either input immediately re-calculates all P&L, fees, and statistics. Market and sweep fills are taker; passive limit fills are maker.
+      </div>
+    </section>
+    <aside id="side">
+      <div class="panel-title">Executions</div>
+      <div id="table-wrap"><table id="fills-table"></table></div>
+    </aside>
+  </main>
+</div>
+
+<script>
+const STORAGE_KEY = 'bfs_saved_executions';
+const TRADES_DAY_PREFIX = 'bfs_trades_';
+
+function loadExecutions() {
+  const out = [];
+  const seen = new Set();
+  for (let i = 0; i < localStorage.length; i++) {
+    const k = localStorage.key(i);
+    if (!k || !k.startsWith(TRADES_DAY_PREFIX)) continue;
+    try {
+      const day = JSON.parse(localStorage.getItem(k) || '[]');
+      for (const e of day) {
+        if (e && e.id && !seen.has(e.id)) { seen.add(e.id); out.push(e); }
+      }
+    } catch {}
+  }
+  // Back-compat: include any leftover legacy blob entries that haven't been migrated.
+  try {
+    const legacy = JSON.parse(localStorage.getItem(STORAGE_KEY) || '[]');
+    for (const e of legacy) {
+      if (e && e.id && !seen.has(e.id)) { seen.add(e.id); out.push(e); }
+    }
+  } catch {}
+  out.sort((a, b) => (a.ts || 0) - (b.ts || 0));
+  return out;
+}
+
+function feeType(exec) {
+  if (exec.feeType) return exec.feeType;
+  return exec.reason === 'MARKET' || exec.reason === 'SWEEP' ? 'TAKER' : 'MAKER';
+}
+
+function fmtMoney(v) {
+  const sign = v >= 0 ? '+' : '-';
+  return `${sign}$${Math.abs(v).toFixed(2)}`;
+}
+
+function fmtNum(v, d = 2) {
+  return Number.isFinite(v) ? v.toFixed(d) : '-';
+}
+
+function cls(v) {
+  return v > 0 ? 'pos' : v < 0 ? 'neg' : 'flat';
+}
+
+function analyze(execs, makerPercent, takerPercent) {
+  // makerPercent / takerPercent come from the UI inputs and are applied to all
+  // records on every refresh, so editing the inputs always re-calculates P&L.
+  const sorted = [...execs].sort((a, b) => a.ts - b.ts);
+  const positions = {};
+  const realizedBySymbol = {};
+  const closedTrades = [];
+  const equity = [];
+  let cash = 0, fees = 0, peak = 0, maxDrawdown = 0;
+
+  for (const e of sorted) {
+    const symbol = e.symbol || 'UNKNOWN';
+    const qty = Number(e.qty) || 0;
+    const price = Number(e.price) || 0;
+    const signedQty = e.side === 'BUY' ? qty : -qty;
+    const notional = price * qty;
+
+    // Always use the current UI inputs so editing them re-calculates P&L live.
+    // The stored feePercentAtFill is used only to seed the input defaults on load.
+    const feePercent = feeType(e) === 'TAKER' ? takerPercent : makerPercent;
+    const fee = notional * feePercent / 100;
+    fees += fee;
+    cash += e.side === 'BUY' ? -notional - fee : notional - fee;
+
+    if (!positions[symbol]) positions[symbol] = { qty: 0, avg: 0, last: price, feeCarry: 0 };
+    if (!realizedBySymbol[symbol]) realizedBySymbol[symbol] = 0;
+    const p = positions[symbol];
+    p.last = price;
+
+    if (p.qty === 0 || Math.sign(p.qty) === Math.sign(signedQty)) {
+      // Opening or adding to position
+      const totalAbs = Math.abs(p.qty) + qty;
+      p.avg = totalAbs > 0 ? (Math.abs(p.qty) * p.avg + qty * price) / totalAbs : 0;
+      p.feeCarry += fee;
+      p.qty += signedQty;
+    } else {
+      // Closing or flipping position
+      const closeQty = Math.min(Math.abs(p.qty), qty);
+      const priorAbsQty = Math.abs(p.qty);
+      // Proportion of entry-side fees attributable to the closed portion
+      const entryFee = priorAbsQty > 0 ? p.feeCarry * (closeQty / priorAbsQty) : 0;
+      const closeFee = fee * (closeQty / qty);
+      const pnlPerUnit = p.qty > 0 ? price - p.avg : p.avg - price;
+      const gross = pnlPerUnit * closeQty;
+      const net = gross - entryFee - closeFee;
+      realizedBySymbol[symbol] += net;
+      closedTrades.push({ ...e, closeQty, gross, fee: entryFee + closeFee, net });
+
+      const remainingSigned = p.qty + signedQty;
+      if (Math.abs(remainingSigned) < 1e-12) {
+        // Position fully closed — reset everything cleanly
+        p.qty = 0; p.avg = 0; p.feeCarry = 0;
+      } else if (Math.sign(remainingSigned) === Math.sign(p.qty)) {
+        // Partial close, same side remains
+        p.feeCarry = Math.max(0, p.feeCarry - entryFee);
+        p.qty = remainingSigned;
+      } else {
+        // Position flipped: close all, open new position in opposite direction.
+        // feeCarry for the new position is only the fee on the excess qty.
+        const excessQty = qty - closeQty;           // qty that opens the new side
+        const newFee = excessQty > 0 ? fee * (excessQty / qty) : 0;
+        p.qty = remainingSigned;
+        p.avg = price;
+        p.feeCarry = newFee;
+      }
+    }
+
+    const marked = Object.values(positions).reduce((sum, pos) => sum + pos.qty * pos.last, 0);
+    const eq = cash + marked;
+    peak = Math.max(peak, eq);
+    maxDrawdown = Math.min(maxDrawdown, eq - peak);
+    equity.push({ ts: e.ts, equity: eq, cash, fees, symbol, side: e.side, price, qty, reason: e.reason, feeType: feeType(e) });
+  }
+
+  const netPnl = equity.length ? equity[equity.length - 1].equity : 0;
+  const wins = closedTrades.filter(t => t.net > 0);
+  const losses = closedTrades.filter(t => t.net < 0);
+  const grossProfit = wins.reduce((s, t) => s + t.net, 0);
+  const grossLoss = Math.abs(losses.reduce((s, t) => s + t.net, 0));
+  const profitFactor = grossLoss > 0 ? grossProfit / grossLoss : grossProfit > 0 ? Infinity : 0;
+  const winRate = closedTrades.length ? wins.length / closedTrades.length : 0;
+  const avgWin = wins.length ? grossProfit / wins.length : 0;
+  const avgLoss = losses.length ? grossLoss / losses.length : 0;
+  const expectancy = closedTrades.length ? closedTrades.reduce((s, t) => s + t.net, 0) / closedTrades.length : 0;
+  const returns = [];
+  for (let i = 1; i < equity.length; i++) returns.push(equity[i].equity - equity[i - 1].equity);
+  const mean = returns.length ? returns.reduce((a, b) => a + b, 0) / returns.length : 0;
+  const variance = returns.length > 1 ? returns.reduce((s, r) => s + Math.pow(r - mean, 2), 0) / (returns.length - 1) : 0;
+  const sharpe = variance > 0 ? mean / Math.sqrt(variance) * Math.sqrt(Math.min(252, returns.length || 1)) : 0;
+
+  return { executions: sorted, equity, closedTrades, netPnl, fees, profitFactor, winRate, avgWin, avgLoss, expectancy, sharpe, maxDrawdown };
+}
+
+function renderSummary(a) {
+  const rows = [
+    ['Net P&L', fmtMoney(a.netPnl), cls(a.netPnl)],
+    ['Fees', '$' + a.fees.toFixed(2), 'flat'],
+    ['Executions', String(a.executions.length), 'flat'],
+    ['Closed Trades', String(a.closedTrades.length), 'flat'],
+    ['Win Rate', (a.winRate * 100).toFixed(1) + '%', a.winRate >= .5 ? 'pos' : 'neg'],
+    ['Profit Factor', a.profitFactor === Infinity ? '∞' : fmtNum(a.profitFactor, 2), a.profitFactor >= 1 ? 'pos' : 'neg'],
+    ['Sharpe', fmtNum(a.sharpe, 2), a.sharpe > 0 ? 'pos' : 'neg'],
+    ['Max DD', fmtMoney(a.maxDrawdown), a.maxDrawdown < 0 ? 'neg' : 'flat'],
+    ['Expectancy', fmtMoney(a.expectancy), cls(a.expectancy)],
+    ['Avg Win', fmtMoney(a.avgWin), 'pos'],
+    ['Avg Loss', '$' + a.avgLoss.toFixed(2), 'neg'],
+  ];
+  document.getElementById('summary').innerHTML = rows.map(([k, v, c]) => `
+    <div class="metric"><div class="k">${k}</div><div class="v ${c}">${v}</div></div>
+  `).join('');
+}
+
+function renderChart(equity) {
+  const canvas = document.getElementById('chart');
+  const ctx = canvas.getContext('2d');
+  const w = canvas.width, h = canvas.height;
+  ctx.clearRect(0, 0, w, h);
+  ctx.fillStyle = '#0c1018'; ctx.fillRect(0, 0, w, h);
+  ctx.strokeStyle = '#1e2d42'; ctx.lineWidth = 1;
+  for (let i = 0; i <= 4; i++) {
+    const y = 30 + i * ((h - 60) / 4);
+    ctx.beginPath(); ctx.moveTo(42, y); ctx.lineTo(w - 16, y); ctx.stroke();
+  }
+  if (!equity.length) {
+    ctx.fillStyle = '#5a7a9a'; ctx.fillText('No saved executions', 48, 54); return;
+  }
+  const vals = equity.map(e => e.equity);
+  let min = Math.min(...vals, 0), max = Math.max(...vals, 0);
+  if (Math.abs(max - min) < 1e-9) { max += 1; min -= 1; }
+  const x = i => 42 + i * ((w - 60) / Math.max(1, equity.length - 1));
+  const y = v => h - 30 - (v - min) / (max - min) * (h - 60);
+  const zeroY = y(0);
+  ctx.strokeStyle = '#334455'; ctx.beginPath(); ctx.moveTo(42, zeroY); ctx.lineTo(w - 16, zeroY); ctx.stroke();
+  ctx.strokeStyle = vals[vals.length - 1] >= 0 ? '#00d97e' : '#f03c3c';
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  vals.forEach((v, i) => { if (i === 0) ctx.moveTo(x(i), y(v)); else ctx.lineTo(x(i), y(v)); });
+  ctx.stroke();
+  ctx.fillStyle = '#9aaabb';
+  ctx.fillText('$' + max.toFixed(2), 6, y(max) + 4);
+  ctx.fillText('$' + min.toFixed(2), 6, y(min) + 4);
+}
+
+function renderTable(execs) {
+  const rows = execs.slice().reverse().map(e => `
+    <tr>
+      <td>${new Date(e.ts).toLocaleString()}</td>
+      <td>${e.symbol}</td>
+      <td class="${e.side === 'BUY' ? 'buy' : 'sell'}">${e.side}</td>
+      <td>${Number(e.qty).toFixed(6)}</td>
+      <td>${Number(e.price).toFixed(6)}</td>
+      <td>${e.reason || ''}</td>
+      <td>${feeType(e)}</td>
+      <td>${e.strategy || ''}</td>
+    </tr>
+  `).join('');
+  document.getElementById('fills-table').innerHTML = `
+    <thead><tr><th>Time</th><th>Symbol</th><th>Side</th><th>Qty</th><th>Price</th><th>Reason</th><th>Fee</th><th>Strategy</th></tr></thead>
+    <tbody>${rows}</tbody>
+  `;
+}
+
+function populateSymbols(execs) {
+  const sel = document.getElementById('symbol-filter');
+  const current = sel.value;
+  const symbols = Array.from(new Set(execs.map(e => e.symbol).filter(Boolean))).sort();
+  sel.innerHTML = '<option value="ALL">ALL</option>' + symbols.map(s => `<option value="${s}">${s}</option>`).join('');
+  if (symbols.includes(current)) sel.value = current;
+}
+
+function currentExecutions() {
+  const symbol = document.getElementById('symbol-filter').value;
+  const all = loadExecutions();
+  return symbol === 'ALL' ? all : all.filter(e => e.symbol === symbol);
+}
+
+function refresh() {
+  const all = loadExecutions();
+  populateSymbols(all);
+  const maker = Math.max(0, parseFloat(document.getElementById('maker-fee').value) || 0);
+  const taker = Math.max(0, parseFloat(document.getElementById('taker-fee').value) || 0);
+  const execs = currentExecutions();
+  const a = analyze(execs, maker, taker);
+  document.getElementById('status').textContent = `${all.length} saved execution(s)`;
+  renderSummary(a); renderChart(a.equity); renderTable(a.executions);
+}
+
+function exportCsv() {
+  const execs = currentExecutions();
+  const header = ['ts','symbol','side','qty','price','reason','feeType','strategy','orderId'];
+  const lines = [header.join(',')].concat(execs.map(e => header.map(k => JSON.stringify(e[k] ?? '')).join(',')));
+  const blob = new Blob([lines.join('\n')], { type:'text/csv' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = 'binance-fill-simulator-trades.csv'; a.click();
+  URL.revokeObjectURL(url);
+}
+
+document.getElementById('maker-fee').addEventListener('input', refresh);
+document.getElementById('taker-fee').addEventListener('input', refresh);
+
+// Seed the fee inputs from stored execution records if available,
+// so the defaults shown match what was actually paid.
+(function seedFeeInputs() {
+  const execs = loadExecutions();
+  const takers = execs.filter(e => (e.feeType || (e.reason === 'MARKET' || e.reason === 'SWEEP' ? 'TAKER' : 'MAKER')) === 'TAKER' && Number.isFinite(e.feePercentAtFill));
+  const makers = execs.filter(e => (e.feeType || (e.reason === 'MARKET' || e.reason === 'SWEEP' ? 'TAKER' : 'MAKER')) === 'MAKER' && Number.isFinite(e.feePercentAtFill));
+  if (takers.length) {
+    const med = takers.map(e => e.feePercentAtFill).sort((a,b)=>a-b)[Math.floor(takers.length/2)];
+    document.getElementById('taker-fee').value = med;
+  }
+  if (makers.length) {
+    const med = makers.map(e => e.feePercentAtFill).sort((a,b)=>a-b)[Math.floor(makers.length/2)];
+    document.getElementById('maker-fee').value = med;
+  }
+})();
+document.getElementById('symbol-filter').addEventListener('change', refresh);
+document.getElementById('export-btn').addEventListener('click', exportCsv);
+document.getElementById('clear-btn').addEventListener('click', () => {
+  if (!confirm('Delete ALL saved trade history (every day bucket + legacy blob)?')) return;
+  localStorage.removeItem(STORAGE_KEY);
+  const dayKeys = [];
+  for (let i = 0; i < localStorage.length; i++) {
+    const k = localStorage.key(i);
+    if (k && k.startsWith(TRADES_DAY_PREFIX)) dayKeys.push(k);
+  }
+  for (const k of dayKeys) localStorage.removeItem(k);
+  refresh();
+});
+refresh();
+</script>
+</body>
+</html>
