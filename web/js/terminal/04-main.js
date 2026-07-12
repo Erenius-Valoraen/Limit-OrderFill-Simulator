@@ -26,9 +26,7 @@ document.getElementById('clear-saved-trades-btn').addEventListener('click', clea
 document.getElementById('analysis-btn').addEventListener('click', openAnalysisPage);
 document.addEventListener('keydown', (e) => { if (e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT') return; if (e.key === 'b' || e.key === 'B') joinBid(); if (e.key === 'a' || e.key === 'A') joinAsk(); if (e.key === 'c' || e.key === 'C') { const n = cancelAll(); setMsg(`Cancelled ${n} order(s)`, 'var(--yellow)'); } if (e.key === 'Escape') { if (state.selectedOrderId) { cancelOrder(state.selectedOrderId); state.selectedOrderId = null; } } });
 
-// ═══════════════════════════════════════════════════════════════
-//  BOOT
-// ═══════════════════════════════════════════════════════════════
+// boot
 detectDecimals('BTCUSDT');
 connect('BTCUSDT');
 refreshPositions();

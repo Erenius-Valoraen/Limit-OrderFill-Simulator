@@ -1,16 +1,15 @@
 /*
-  MeanReversionStrategy: passive limit-order mean reversion strategy.
+  MeanReversionStrategy: passive limit-order mean reversion.
 
-  Research basis:
-    - Cont, Kukanov, Stoikov: order-flow imbalance explains short-run price
-      pressure, so strong one-sided flow is treated as adverse-selection risk.
-    - Bechler, Ludkovski: LOB resiliency and deeper shape matter beyond top-book
-      imbalance; this strategy waits for stretched prices with replenishing depth.
-    - Avellaneda-Stoikov: inventory-aware passive quoting reduces inventory risk.
+  Fades short-term dislocations from an adaptive EWMA fair value, exits passively
+  once price reverts, risk limits hit, or the setup goes stale. Limit orders only.
 
-  The strategy only submits limit orders. It fades short-term dislocations from an
-  adaptive EWMA fair value and exits passively when price reverts, risk limits are
-  hit, or the setup goes stale.
+  Notes on why:
+    - one-sided flow (OFI, Cont/Kukanov/Stoikov) is treated as adverse selection,
+      so we avoid fading into it.
+    - we want stretched price plus replenishing depth (LOB resiliency), not just
+      top-book imbalance.
+    - quoting is inventory-aware (Avellaneda-Stoikov) to keep inventory risk down.
 */
 (function attachMeanReversionStrategy(global) {
   'use strict';

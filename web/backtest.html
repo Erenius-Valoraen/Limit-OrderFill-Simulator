@@ -9,7 +9,6 @@
 <body>
 <div id="app">
 
-  <!-- BACKTEST PLAY BAR -->
   <div id="backtest-bar">
     <button type="button" id="bt-play-btn">▶ Play</button>
     <button type="button" id="bt-pause-btn" disabled>⏸ Pause</button>
@@ -35,7 +34,6 @@
     <span id="bt-fidelity-note" title="At &gt;1× the strategy ticks per second of WALL time, not market time — interpret PnL with care.">SPEED &gt; 1× — strategy clock differs from market</span>
   </div>
 
-  <!-- HEADER -->
   <div id="header">
     <div id="conn-dot" class="connecting"></div>
     <div id="header-sym">BTCUSDT</div>
@@ -69,10 +67,8 @@
     </div>
   </div>
 
-  <!-- MAIN ROW -->
   <div id="main-row">
 
-    <!-- ORDER BOOK -->
     <div id="book-panel">
       <div class="panel-header">
         <span class="panel-title">Order Book</span>
@@ -101,7 +97,6 @@
       </div>
     </div>
 
-    <!-- TAPE -->
     <div id="tape-panel">
       <div class="panel-header">
         <span class="panel-title">Trade Tape</span>
@@ -113,7 +108,6 @@
       <div id="tape-log"></div>
     </div>
 
-    <!-- POSITIONS -->
     <div id="pos-panel">
       <div class="panel-header">
         <span class="panel-title">Positions</span>
@@ -150,7 +144,6 @@
 
   </div>
 
-  <!-- CHART -->
   <div id="chart-section">
     <div id="chart-panel-header">
       <span class="panel-title">Price Chart — <span id="chart-tf-label">5s</span></span>
@@ -159,7 +152,6 @@
     <div id="chart-container"></div>
   </div>
 
-  <!-- ENTRY BAR -->
   <div id="entry-bar">
     <span class="entry-label">Side</span>
     <select id="side-select" class="entry-input">
@@ -199,7 +191,6 @@
     <span id="entry-msg"></span>
   </div>
 
-  <!-- BLOTTER -->
   <div id="blotter-section">
     <div class="blotter-hdr" id="blotter-hdr-row">
       <span>Order ID</span><span>Symbol</span><span>Side</span>

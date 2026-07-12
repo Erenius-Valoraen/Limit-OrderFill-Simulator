@@ -1,10 +1,8 @@
 """
-Read-only monitor dashboard for the paper trader (http://localhost:PORT).
+Monitor dashboard + its JSON API (http://localhost:PORT).
 
-Auto-refreshes; no user input needed; safe to leave open or close any time.
-Every handler reads live state from the `engine` module via attribute access
-(engine.<name>) so the values are always current, and the few handlers that
-mutate state write straight back onto the engine module.
+Handlers read live state off the engine module (engine.<name>) so the values
+stay current; the couple that change state write straight back to it.
 """
 import json
 from datetime import datetime
@@ -15,9 +13,7 @@ from aiohttp import web
 
 from paper_trader_app import engine
 
-# The dashboard page is a static HTML template served verbatim. It lives in
-# server/templates/paper_dashboard.html so this module stays focused on the
-# request handlers rather than a 670-line embedded string.
+# dashboard page lives in server/templates/, served as-is
 _DASHBOARD_PATH = Path(__file__).resolve().parent.parent / "templates" / "paper_dashboard.html"
 DASHBOARD_HTML = _DASHBOARD_PATH.read_text(encoding="utf-8")
 

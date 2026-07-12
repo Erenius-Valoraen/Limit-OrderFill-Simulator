@@ -1,8 +1,6 @@
 """
-Entry point / orchestration for the headless paper trader.
-
-Wires the trading `engine` (feeds + strategy) to the `web` monitor dashboard,
-installs shutdown handlers, and runs the asyncio event loop.
+Startup and main loop. Wires the engine (feeds + strategy) to the web
+dashboard and runs everything on one asyncio loop.
 """
 import asyncio
 import signal as signal_mod

@@ -201,17 +201,15 @@ function executionFeeType(reason) {
   return reason === 'MARKET' || reason === 'SWEEP' ? 'TAKER' : 'MAKER';
 }
 
-// ── Backtest: per-contract fee model ───────────────────────────────────────
-// In live (Binance) mode, `makerFeePercent`/`takerFeePercent` are %
-// of notional. In backtest mode against CME futures (NQ etc.), fees are
-// a flat dollar amount per contract per side — independent of price.
-// The inputs in the entry bar are reinterpreted as $/contract when
-// `window.__backtest.contract.is_futures` is true.
+// backtest per-contract fee model. live (Binance) treats maker/takerFeePercent
+// as % of notional; against CME futures (NQ etc.) fees are a flat $/contract per
+// side, independent of price. the entry-bar inputs are reinterpreted as
+// $/contract when window.__backtest.contract.is_futures is true.
 function feeForFill(price, qty, reason) {
   const isFutures = !!(window.__backtest && window.__backtest.contract && window.__backtest.contract.is_futures);
   if (isFutures) {
     const perContract = reason === 'MARKET' || reason === 'SWEEP'
-      ? state.takerFeePercent     // reused field; now interpreted as $/contract
+      ? state.takerFeePercent     // reused field, now $/contract
       : state.makerFeePercent;
     return Math.abs(qty) * (Number.isFinite(perContract) ? perContract : 0);
   }
@@ -236,7 +234,7 @@ function recordExecution(order, price, qty, reason, ts) {
     symbol: order.symbol,
     side: order.side,
     price, qty, reason, feeType,
-    feePercentAtFill: feeRate,                  // re-purposed as $/contract for futures
+    feePercentAtFill: feeRate,                  // $/contract for futures
     feePaidAtFill: feeForFill(price, qty, reason),
     strategy: currentStrategyName(),
     executionMode: document.getElementById('strategy-exec-select')?.value || 'limit',
@@ -255,9 +253,7 @@ function recordExecution(order, price, qty, reason, ts) {
   }
 }
 
-// ═══════════════════════════════════════════════════════════════
-//  POSITION TRACKING
-// ═══════════════════════════════════════════════════════════════
+// position tracking
 function feePercentForReason(reason) {
   return reason === 'MARKET' || reason === 'SWEEP' ? state.takerFeePercent : state.makerFeePercent;
 }

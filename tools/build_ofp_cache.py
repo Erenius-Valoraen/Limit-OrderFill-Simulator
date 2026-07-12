@@ -1,20 +1,18 @@
 #!/usr/bin/env python3
 """
-build_ofp_cache.py — Pre-parse the RTH depth+trade events from the NT JSONL into
-a compact binary cache so the headless OFP runner (ofp_runner.js) never has to
-touch the 25 GB JSON.
+Pre-parse the RTH depth+trade events from the NT JSONL into a compact binary
+cache so the headless OFP runner (ofp_runner.js) never has to touch the 25 GB
+JSON.
 
-For each RTH day it:
-  - seeks to the RTH-open byte offset (from <file>.btidx.json),
-  - reads to 16:00 ET,
-  - drops consecutive byte-identical lines (the NT AddDataSeries double-fire),
-  - encodes each event as a fixed 12-byte little-endian record:
-        u8  tag      bit0: 0=depth, 1=trade ; bit1: side (depth 0=BID/1=ASK, trade 0=BUY/1=SELL)
-        u8  _pad
-        u16 qty      (depth: 0 == remove level)
-        u32 ts       ms since the day's first event (anchor)
-        u32 px_ticks round(price / tick)
-  - writes ofp_cache/<date>.bin plus ofp_cache/meta.json.
+For each RTH day: seek to the RTH-open byte offset (from <file>.btidx.json),
+read to 16:00 ET, drop consecutive byte-identical lines (the NT AddDataSeries
+double-fire), and encode each event as a fixed 12-byte little-endian record:
+    u8  tag      bit0: 0=depth, 1=trade ; bit1: side (depth 0=BID/1=ASK, trade 0=BUY/1=SELL)
+    u8  _pad
+    u16 qty      (depth: 0 == remove level)
+    u32 ts       ms since the day's first event (anchor)
+    u32 px_ticks round(price / tick)
+Output goes to ofp_cache/<date>.bin plus ofp_cache/meta.json.
 
 Usage:
   python3 build_ofp_cache.py [bfs_l2_export.jsonl] [--start YYYY-MM-DD] [--end YYYY-MM-DD]
@@ -30,7 +28,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, Optional
 
-# This tool lives in <root>/tools/; shared data lives in <root>/data/.
+# data/ dir, relative to repo root
 DATA_DIR = Path(__file__).resolve().parent.parent / "data"
 
 try:
@@ -89,7 +87,7 @@ def build_day(f, off: int, end_ms: int, tick: float) -> tuple:
         if ts >= end_ms:
             break
         line = raw.rstrip(b"\r\n")
-        if line == prev_line:           # NT double-fire: byte-identical consecutive line
+        if line == prev_line:           # NT double-fire, drop identical consecutive line
             dups += 1
             continue
         prev_line = line

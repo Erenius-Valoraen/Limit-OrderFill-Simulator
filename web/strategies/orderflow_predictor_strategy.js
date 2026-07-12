@@ -1,19 +1,13 @@
 /*
-  OrderFlowPredictor: ultra-short-term crypto order-flow strategy.
+  OrderFlowPredictor: ultra short-term order-flow strategy.
 
-  Research basis:
-    - Cont, Kukanov, Stoikov: short-horizon price changes are strongly related
-      to order-flow imbalance at the best bid/ask.
-    - Multi-level OFI literature: deeper LOB pressure can add predictive signal.
-    - Crypto LOB research: engineered order-flow, imbalance, trade-sign, and
-      liquidity features often matter more than adding model complexity.
+  Basic idea: short-horizon price moves track order-flow imbalance at the top of
+  book (Cont/Kukanov/Stoikov). We also pull in deeper OFI, trade-sign and queue
+  features since those tend to help more than a fancier model.
 
-  Usage:
-    1. Load after terminal.html.
-    2. Start with:
-         OrderFlowPredictor.start({ qty: 0.001 })
-    3. Stop and cancel strategy-owned orders:
-         OrderFlowPredictor.stop()
+  Load after terminal.html, then:
+    OrderFlowPredictor.start({ qty: 0.001 })
+    OrderFlowPredictor.stop()   // stops and cancels our orders
 */
 (function attachOrderFlowPredictor(global) {
   'use strict';

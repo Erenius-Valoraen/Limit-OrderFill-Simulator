@@ -1,5 +1,5 @@
 """
-validate_export.py — sanity-check an NT BfsL2Exporter JSONL file.
+Sanity-check an NT BfsL2Exporter JSONL file.
 
 Usage (Windows PowerShell or cmd):
     python validate_export.py "C:\\Users\\<you>\\Documents\\NinjaTrader 8\\bfs_l2_export.jsonl"
@@ -8,21 +8,16 @@ Usage (macOS / Linux):
     python3 validate_export.py /path/to/bfs_l2_export.jsonl
 
 Recommended:
-    pip install tqdm     (for a progress bar — falls back to text progress if missing)
+    pip install tqdm     (for a progress bar, falls back to text progress if missing)
 
-What it does (single streaming pass, RAM stays small even for 100GB files):
-  1. File integrity — readable, BOM handled, last line is complete JSON
-  2. Schema validation — every event has the right fields and types
-  3. Statistical breakdown — counts by type, side, op, depth position
-  4. Temporal coherence — uses ONLY data events (depth/trade) for time range,
-     ignoring meta wall-clock timestamps that come from replay-start time
-  5. Book reconstruction — separates true inversions (bid > ask, real problem)
-     from momentary touches (bid == ask, normal microstructure noise)
-  6. Per-session summary — based on data-event timestamps, not meta
+Single streaming pass, so RAM stays small even for 100GB files. Checks file
+integrity, schema, per-type/side/op counts, temporal gaps (data events only,
+ignoring meta replay-start timestamps), book inversions vs crossed touches, and
+a per-session summary.
 
 Exit code:
-  0  → all checks passed (data is good to backtest)
-  1  → one or more issues need attention
+  0  all checks passed (data is good to backtest)
+  1  one or more issues need attention
 """
 from __future__ import annotations
 import json
@@ -34,17 +29,16 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import List, Optional, Tuple
 
-# ── Thresholds ────────────────────────────────────────────────────────────
+# thresholds
 TIME_GAP_WARN_SEC          = 300          # warn if 5 min < gap < natural break
-TIME_GAP_NATURAL_BREAK_SEC = 30 * 60      # ≥30 min → natural break (CME close / Sunday open, expected)
-TIME_GAP_WEEKEND_SEC       = 24 * 3600    # ≥24h → weekend / extended break
-# CME equity-index futures close 5:00 PM ET to 6:00 PM ET daily.
-# In UTC that's 21:00–22:00 during DST (Mar–Nov) or 22:00–23:00 standard.
-# A gap whose start falls in 20:30–23:30 UTC is treated as the daily close,
-# regardless of duration.
+TIME_GAP_NATURAL_BREAK_SEC = 30 * 60      # >=30 min: natural break (CME close / Sunday open)
+TIME_GAP_WEEKEND_SEC       = 24 * 3600    # >=24h: weekend / extended break
+# CME equity-index futures close 5-6 PM ET daily. In UTC that's 21:00-22:00
+# during DST or 22:00-23:00 standard, so a gap starting in 20:30-23:30 UTC is
+# treated as the daily close regardless of duration.
 CME_CLOSE_UTC_START_HOUR = 20.5
 CME_CLOSE_UTC_END_HOUR   = 23.5
-INVERTED_PCT_WARN          = 0.001        # >0.001% TRUE inversions → suspect
+INVERTED_PCT_WARN          = 0.001        # >0.001% true inversions is suspect
 MAX_INVERSION_SAMPLES      = 5
 MAX_CROSSED_SAMPLES        = 3
 MAX_BAD_LINE_SAMPLES       = 5
@@ -56,7 +50,6 @@ VALID_SIDES_D = {"BID", "ASK"}
 VALID_SIDES_T = {"BUY", "SELL"}
 VALID_OPS     = {"INS", "UPD", "REM"}
 
-# ── tqdm with graceful fallback ────────────────────────────────────────────
 try:
     from tqdm import tqdm
     HAVE_TQDM = True
@@ -64,7 +57,6 @@ except ImportError:
     HAVE_TQDM = False
 
 
-# ── Formatting helpers ────────────────────────────────────────────────────
 def fmt_bytes(n):
     n = float(n)
     for unit in ("B", "KB", "MB", "GB", "TB"):
@@ -98,10 +90,10 @@ def fmt_date(ms):
 
 def classify_gap(prev_ts_ms, this_ts_ms, gap_sec):
     """Classify a data-event gap. Returns one of:
-    'weekend'   — >=24h (Friday close to Sunday reopen)
-    'cme_close' — gap straddles or starts in the CME 5 PM ET maintenance window
-    'natural'   — >=30min, treated as expected break
-    'warn'      — 5min - 30min, likely data dropout
+    'weekend'   >=24h (Friday close to Sunday reopen)
+    'cme_close' starts in the CME 5 PM ET maintenance window
+    'natural'   >=30min, treated as expected break
+    'warn'      5min to 30min, likely data dropout
     """
     if gap_sec >= TIME_GAP_WEEKEND_SEC:
         return "weekend"
@@ -129,7 +121,7 @@ def fmt_duration(seconds):
     return " ".join(parts) if parts else "<1m"
 
 
-# ── Fallback progress reporter when tqdm is absent ─────────────────────────
+# fallback progress reporter when tqdm is absent
 class _PlainProgress:
     def __init__(self, total, desc=""):
         self.total = total
@@ -167,7 +159,6 @@ class _PlainProgress:
         sys.stdout.flush()
 
 
-# ── Main validator ─────────────────────────────────────────────────────────
 def main(path_str):
     path = Path(path_str)
     if not path.exists():
@@ -187,7 +178,7 @@ def main(path_str):
         print("Tip:  `pip install tqdm` for a nicer progress bar.")
     print("")
 
-    # ── [1/4] File integrity ──────────────────────────────────────────────
+    # [1/4] file integrity
     print("[1/4] File integrity ...")
     has_bom = False
     try:
@@ -227,11 +218,11 @@ def main(path_str):
 
     print("")
 
-    # ── [2/4] Streaming scan with progress bar ────────────────────────────
+    # [2/4] streaming scan
     print("[2/4] Streaming scan ...")
     t0 = time.monotonic()
 
-    # Book state for inversion/cross detection
+    # book state for inversion/cross detection
     bids = {}
     asks = {}
     book_state = 0   # 0 = normal/empty, 1 = crossed (bb==ba), 2 = inverted (bb>ba)
@@ -248,20 +239,20 @@ def main(path_str):
     inverted_samples   = []   # true bid > ask
     crossed_samples    = []   # bid == ask
 
-    # Wall-clock range (every event, including meta)
+    # wall-clock range (every event, including meta)
     wall_first_ts = None
     wall_last_ts  = None
 
-    # Data range (depth + trade only — the real market timestamps)
+    # data range (depth + trade only, the real market timestamps)
     data_first_ts = None
     data_last_ts  = None
     last_data_ts  = None
 
     in_session_gaps = []        # 5min < gap < TIME_GAP_NATURAL_BREAK_SEC
-    natural_breaks  = []        # ≥ TIME_GAP_NATURAL_BREAK_SEC
-    weekend_breaks  = []        # ≥ TIME_GAP_WEEKEND_SEC
+    natural_breaks  = []        # >= TIME_GAP_NATURAL_BREAK_SEC
+    weekend_breaks  = []        # >= TIME_GAP_WEEKEND_SEC
 
-    sessions = []               # list of dicts
+    sessions = []
     current_session = None
 
     inverted_count = 0          # transitions into bid > ask
@@ -284,7 +275,7 @@ def main(path_str):
             "px_min": float("inf"), "px_max": float("-inf"),
         }
 
-    # Progress bar — bytes-based for accuracy on multi-GB files
+    # bytes-based progress bar for accuracy on multi-GB files
     if HAVE_TQDM:
         pbar = tqdm(total=file_size, unit="B", unit_scale=True, unit_divisor=1024,
                     desc="scanning", smoothing=0.05, dynamic_ncols=True,
@@ -302,7 +293,7 @@ def main(path_str):
 
                 pbar.update(len(raw_bytes))
 
-                # Strip BOM from very first line if present
+                # strip BOM from very first line if present
                 if first_line:
                     first_line = False
                     if raw_bytes.startswith(b"\xef\xbb\xbf"):
@@ -313,7 +304,6 @@ def main(path_str):
                     continue
                 events_scanned += 1
 
-                # JSON parse
                 try:
                     ev = json.loads(raw)
                 except json.JSONDecodeError:
@@ -345,11 +335,11 @@ def main(path_str):
                         start_session(evt)
                     continue
 
-                # From here on: depth or trade — that's actual market data
+                # from here on: depth or trade, the actual market data
                 if current_session is None:
                     start_session("implicit")
 
-                # Track gap between consecutive DATA events (skip meta entirely)
+                # gap between consecutive data events (skip meta entirely)
                 if last_data_ts is not None:
                     gap_sec = (ets - last_data_ts) / 1000.0
                     if gap_sec >= TIME_GAP_WEEKEND_SEC:
@@ -390,7 +380,7 @@ def main(path_str):
                         if qty < qty_min: qty_min = qty
                         if qty > qty_max: qty_max = qty
 
-                    # Apply to book
+                    # apply to book
                     target = bids if side == "BID" else asks
                     if op == "REM" or qty == 0:
                         target.pop(px, None)
@@ -398,8 +388,8 @@ def main(path_str):
                         target[px] = qty
                     current_session["depth"] += 1
 
-                    # Detect book state transitions (count distinct moments,
-                    # not every depth event while in the state)
+                    # count distinct state transitions, not every depth event
+                    # while already in the state
                     if bids and asks:
                         bb = max(bids); ba = min(asks)
                         if bb > ba + PRICE_EPS:
@@ -440,7 +430,6 @@ def main(path_str):
                         if qty > qty_max: qty_max = qty
                     current_session["trade"] += 1
 
-                # Progress postfix update
                 if events_scanned % PROGRESS_UPDATE_EVERY == 0:
                     postfix = "events={0}  depth={1}  trade={2}".format(
                         fmt_int(events_scanned),
@@ -459,7 +448,7 @@ def main(path_str):
     finally:
         pbar.close()
 
-    # Close out last session
+    # close out last session
     if current_session is not None:
         sessions.append(current_session)
 
@@ -470,7 +459,7 @@ def main(path_str):
     ))
     print("")
 
-    # ── [3/4] Schema report ───────────────────────────────────────────────
+    # [3/4] schema report
     print("[3/4] Schema & content breakdown")
     print("  Counts by type:")
     for t in ("meta", "depth", "trade"):
@@ -515,7 +504,7 @@ def main(path_str):
         print("  [OK] all {0} events have valid schema".format(fmt_int(events_scanned)))
     print("")
 
-    # ── [4/4] Temporal & book sanity ──────────────────────────────────────
+    # [4/4] temporal & book sanity
     print("[4/4] Temporal & book sanity")
 
     if data_first_ts is None or data_last_ts is None:
@@ -555,7 +544,7 @@ def main(path_str):
             pxr,
         ))
 
-    # Gap classification — DATA-event gaps only
+    # gap classification, data-event gaps only
     print("")
     if weekend_breaks:
         print("  Weekend/extended breaks (>=24h, expected): {0}".format(len(weekend_breaks)))
@@ -568,14 +557,14 @@ def main(path_str):
     else:
         print("  [OK] no suspicious in-session gaps")
 
-    # Price/qty
+    # price/qty
     print("")
     if px_min < float("inf"):
         print("  Price range across file : ${0:,.2f} – ${1:,.2f}".format(px_min, px_max))
     if qty_max > 0:
         print("  Qty range across file   : {0:,.0f} – {1:,.0f}".format(qty_min, qty_max))
 
-    # Book reconstruction — TRUE inversions vs crossed touches
+    # book reconstruction: true inversions vs crossed touches
     print("")
     total_depth = counts_type.get("depth", 0)
     inv_pct = (inverted_count / total_depth * 100.0) if total_depth else 0.0
@@ -603,7 +592,7 @@ def main(path_str):
 
     print("")
 
-    # ── Final verdict ─────────────────────────────────────────────────────
+    # final verdict
     print("=" * 72)
     issues = []
     if bad_line_count:                            issues.append("{0} malformed JSON lines".format(fmt_int(bad_line_count)))

@@ -1,21 +1,18 @@
 #!/usr/bin/env node
 /*
- * ofp_runner.js — Headless, fast, FAITHFUL backtest of the live Binance
- * OrderFlowPredictor on NQ.
+ * ofp_runner.js: headless backtest of the live OrderFlowPredictor on NQ.
  *
- * It loads the LITERAL orderflow_predictor_strategy.js (the exact file the live
- * BTC terminal runs) inside a vm context, and drives it with:
- *   - a MARKET-TIME clock: Date.now() returns the replayed market timestamp, and
- *     the strategy's setInterval(tick, 350ms) fires every 350ms of MARKET time
- *     (not wall time) — so it samples the data exactly as it would live, at full
- *     replay speed.
- *   - a Node port of terminal.html's MARKET-order engine: bestBid/topBids/...,
+ * Loads the literal orderflow_predictor_strategy.js (the exact file the live
+ * terminal runs) inside a vm context and drives it with:
+ *   - a market-time clock: Date.now() returns the replayed market timestamp, so
+ *     the strategy's setInterval(tick, 350ms) fires every 350ms of market time
+ *     (not wall time) and samples the data exactly as it would live.
+ *   - a Node port of terminal.html's market-order engine: bestBid/topBids/...,
  *     placeMarketOrder (fills after latency via marketFillPrice VWAP over the
  *     real book), executeFill/updatePosition with CME $/contract fees.
- *   - events streamed from the compact binary cache (build_ofp_cache.py), so no
- *     25 GB JSON re-parse.
+ *   - events from the binary cache (build_ofp_cache.py), so no 25 GB JSON reparse.
  *
- * This is the same strategy CODE as live — no Python re-port — run fast.
+ * Same strategy code as live, no Python re-port.
  *
  * Usage:
  *   node ofp_runner.js [--qty 1] [--fee 1.25] [--point-value 20] [--latency 100]
@@ -27,7 +24,7 @@ const fs = require('fs');
 const path = require('path');
 const vm = require('vm');
 
-// ---- args ----
+// args
 function arg(name, def) {
   const i = process.argv.indexOf('--' + name);
   return i >= 0 && i + 1 < process.argv.length ? process.argv[i + 1] : def;
@@ -39,10 +36,9 @@ const LATENCY = parseFloat(arg('latency', '100'));   // ms market-order latency
 const EXEC = arg('exec', 'market');
 const START = arg('start', null);
 const END = arg('end', null);
-// This runner lives in <root>/research/; the OFP cache lives in <root>/data/ofp_cache/.
 const CACHE = arg('cache', path.join(__dirname, '..', 'data', 'ofp_cache'));
 
-// OFP strategy-config overrides (so it can be retuned for NQ without touching the .js)
+// strategy-config overrides, so it can be retuned for NQ without touching the .js
 const CFG = { qty: NaN, executionMode: EXEC, maxVolBps: 250, volGuardSpreadMultiplier: 8 };
 function cfgOpt(flag, key) { const v = arg(flag, null); if (v !== null) CFG[key] = parseFloat(v); }
 cfgOpt('signal-threshold', 'signalThreshold');
@@ -56,31 +52,30 @@ cfgOpt('quote-every', 'quoteEveryMs');
 cfgOpt('levels', 'levels');
 cfgOpt('max-vol-bps', 'maxVolBps');
 cfgOpt('vol-guard', 'volGuardSpreadMultiplier');
-// --invert: report the MIRROR strategy (trade the opposite side at the same
-// moments, filling at the opposite touch). Decisive test for an anti-predictive signal.
+// --invert: report the mirror strategy (opposite side at the same moments,
+// filling at the opposite touch). Tests for an anti-predictive signal.
 const INVERT = process.argv.includes('--invert');
 
 const meta = JSON.parse(fs.readFileSync(path.join(CACHE, 'meta.json'), 'utf8'));
 const TICK = meta.tick || 0.25;
 const SYMBOL = meta.symbol || 'NQ';
-// This runner lives in <root>/research/; the strategy source lives in
-// <root>/web/strategies/. Load the exact same file the browser loads.
+// load the exact same strategy file the browser loads (web/strategies/)
 const OFP_SRC = fs.readFileSync(
   path.join(__dirname, '..', 'web', 'strategies', 'orderflow_predictor_strategy.js'), 'utf8');
 const QEPS = 1e-10;
 
-// ---- one engine + strategy instance per day (fresh state) ----
+// one engine + strategy instance per day (fresh state)
 function runDay(dayMeta) {
   const bin = fs.readFileSync(path.join(CACHE, dayMeta.date + '.bin'));
   const anchor = dayMeta.anchor_ms;
 
   // market clock + scheduling
   let MS = 0;
-  const pending = [];          // market-order fills awaiting latency: {dueMs,id,side,qty}
+  const pending = [];          // fills awaiting latency: {dueMs,id,side,qty}
   let interval = null;         // {fn, period, next} from the strategy's setInterval
   let oid = 0;
 
-  // engine state (mirror of terminal.html `state`, market-mode subset)
+  // engine state (terminal.html `state`, market-mode subset)
   const state = {
     bids: {}, asks: {}, orders: {}, positions: {},
     symbol: SYMBOL, priceDec: 2, lastPrice: null, latencyMs: LATENCY,
@@ -90,7 +85,7 @@ function runDay(dayMeta) {
   let fills = 0, contracts = 0;
   let cyc = null;              // {pts, fees, entryMs}
   const trades = [];          // finalized round-trips {net,pts,fees,holdMs}
-  // shadow inverse (only populated when INVERT)
+  // shadow inverse, only used with INVERT
   let invNet = 0, invAvg = 0, invCyc = null;
   const invTrades = [];
 
@@ -99,7 +94,7 @@ function runDay(dayMeta) {
       (state.positions[state.symbol] = { netQty: 0, avgEntry: 0, realizedPnl: 0 });
   }
 
-  // ---- book helpers (1:1 with terminal.html) ----
+  // book helpers (from terminal.html)
   function bestBid() { const k = Object.keys(state.bids); return k.length ? Math.max.apply(null, k.map(Number)) : null; }
   function bestAsk() { const k = Object.keys(state.asks); return k.length ? Math.min.apply(null, k.map(Number)) : null; }
   function topBids(n) { return Object.keys(state.bids).map(parseFloat).sort((a, b) => b - a).slice(0, n).map(p => [p, state.bids[p]]); }
@@ -124,7 +119,7 @@ function runDay(dayMeta) {
     pending.push({ dueMs: MS + state.latencyMs, id, side, qty });
     return id;
   }
-  function placeOrder(side, price, qty) {   // limit path (unused in market mode, provided for requireTerminal)
+  function placeOrder(side, price, qty) {   // limit path, unused in market mode but needed for requireTerminal
     const id = genId();
     state.orders[id] = { id, side, price: parseFloat(price), qty: parseFloat(qty), filledQty: 0, status: 'OPEN', isMarketPending: false, placedAt: MS };
     return id;
@@ -148,7 +143,7 @@ function runDay(dayMeta) {
     order.filledQty += fill.qty;
     order.status = (order.qty - order.filledQty <= 1e-10) ? 'FILLED' : 'PARTIAL';
     updatePosition(p.side, fill.price, fill.qty);
-    if (INVERT) {                              // mirror: opposite side, opposite touch
+    if (INVERT) {                              // mirror: opposite side + opposite touch
       const oside = p.side === 'BUY' ? 'SELL' : 'BUY';
       const ifill = marketFillPrice(oside, p.qty);
       if (ifill) updateInv(oside, ifill.price, ifill.qty);
@@ -157,7 +152,7 @@ function runDay(dayMeta) {
   function updatePosition(side, fillPrice, fillQty) {
     const pos = posObj();
     const isBuy = side === 'BUY';
-    const fee = Math.abs(fillQty) * FEE;       // CME $/contract (taker)
+    const fee = Math.abs(fillQty) * FEE;       // taker
     fills++; contracts += Math.abs(fillQty);
     if (!cyc) cyc = { pts: 0, fees: 0, entryMs: MS };
     cyc.fees += fee;
@@ -208,7 +203,7 @@ function runDay(dayMeta) {
   function executeFill() { /* folded into settle/updatePosition above */ }
   function handleTrade(trade) { state.lastPrice = trade.price; }  // market mode: no resting-order matching
 
-  // ---- vm sandbox exposing the terminal globals the strategy needs ----
+  // vm sandbox with the terminal globals the strategy needs
   const sandbox = {
     state, bestBid, bestAsk, topBids, topAsks, placeOrder, placeMarketOrder, cancelOrder,
     handleTrade, console, Math, Number, Object, JSON, Array, isNaN, parseFloat, parseInt,
@@ -246,7 +241,7 @@ function runDay(dayMeta) {
   MS = anchor;
   OFP.start(Object.assign({}, CFG, { qty: QTY }));
 
-  // ---- drive events from the binary cache ----
+  // drive events from the binary cache
   const n = bin.length / 12 | 0;
   let lastTs = anchor;
   for (let r = 0; r < n; r++) {
@@ -264,12 +259,12 @@ function runDay(dayMeta) {
     } else {                                // trade
       const side = ((tag >> 1) & 1) === 0 ? 'BUY' : 'SELL';
       state.lastPrice = px;
-      sandbox.handleTrade({ price: px, qty, side, ts });   // wrapped -> captureTrade + handleTrade
+      sandbox.handleTrade({ price: px, qty, side, ts });   // captureTrade + handleTrade
     }
     lastTs = ts;
   }
 
-  // drain remaining ticks/fills, then flatten residual at last price
+  // drain remaining ticks/fills, then flatten residual at the last price
   advanceTo(lastTs + 10_000);
   for (const p of pending.slice().sort((a, b) => a.dueMs - b.dueMs)) { MS = Math.max(MS, p.dueMs); if (p._fn) p._fn(); else settle(p); }
   pending.length = 0;
@@ -285,7 +280,7 @@ function runDay(dayMeta) {
   return { date: dayMeta.date, trades: INVERT ? invTrades : trades, fills, contracts, events: n };
 }
 
-// ---- run all days, report ----
+// run all days, report
 function money(v) { return (v >= 0 ? '+$' : '-$') + Math.abs(v).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }); }
 
 let days = meta.days.slice();

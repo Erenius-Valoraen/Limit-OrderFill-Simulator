@@ -1,26 +1,25 @@
 #!/usr/bin/env python3
 """
-eta_estimate.py — Robert-Rosenbaum / Dayri-Rosenbaum "uncertainty-zones"
-tick-mean-reversion parameter eta, measured on NQ RTH trade prints.
+eta_estimate.py: Dayri-Rosenbaum "uncertainty-zones" tick mean-reversion
+parameter eta, measured on NQ RTH trade prints.
 
 eta_hat = N_continuations / (2 * N_alternations)
-  on the sequence of consecutive DISTINCT traded prices (in ticks):
-    - continuation = move in the SAME direction as the previous move
-    - alternation  = move in the OPPOSITE direction
+  on the sequence of consecutive distinct traded prices (in ticks):
+    - continuation = move in the same direction as the previous move
+    - alternation  = move in the opposite direction
   eta = 0.5  -> driftless random walk (no microstructure effect)
-  eta < 0.5  -> tick-level MEAN REVERSION (bid-ask bounce / absorption)
+  eta < 0.5  -> tick-level mean reversion (bid-ask bounce / absorption)
   eta > 0.5  -> trending
 
-Reference points (Dayri-Rosenbaum, real futures order books):
-  E-mini S&P (ES) 0.035 | ESX 0.087 | Bund 0.138 | DAX 0.275
+Reference (Dayri-Rosenbaum, real futures books):
+  ES 0.035 | ESX 0.087 | Bund 0.138 | DAX 0.275
 
-Reads the trade prints from ofp_cache/*.bin (px stored in ticks).
+Reads trade prints from ofp_cache/*.bin (px in ticks).
 """
 import json
 import struct
 from pathlib import Path
 
-# This script lives in <root>/research/; the OFP cache lives in <root>/data/ofp_cache/.
 CACHE = Path(__file__).resolve().parent.parent / "data" / "ofp_cache"
 meta = json.load((CACHE / "meta.json").open(encoding="utf-8"))
 
@@ -39,7 +38,7 @@ def trade_px_ticks(date):
         arr = np.fromfile(path, dtype=DT)
         tr = arr[(arr['tag'] & 1) == 1]
         return tr['px'].astype(np.int64)
-    # pure-python fallback
+    # no-numpy fallback
     data = path.read_bytes()
     out = []
     st = struct.Struct("<BBHII")
@@ -58,14 +57,14 @@ def eta_for_day(date):
         # collapse to consecutive distinct prices
         keep = np.concatenate(([True], px[1:] != px[:-1]))
         dp = px[keep]
-        moves = np.diff(dp)                      # nonzero integer tick moves
+        moves = np.diff(dp)                      # nonzero tick moves
         if moves.size < 3:
             return None
         s = np.sign(moves)
         same = s[1:] == s[:-1]
         n_cont = int(np.count_nonzero(same))
         n_alt = int(np.count_nonzero(~same))
-        # strict one-tick variant: consecutive moves that are BOTH +/-1 tick
+        # strict variant: consecutive moves both +/-1 tick
         one = np.abs(moves) == 1
         pair_one = one[1:] & one[:-1]
         c1 = int(np.count_nonzero(same & pair_one))

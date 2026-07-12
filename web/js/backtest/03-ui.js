@@ -79,9 +79,7 @@ function refreshPositions() {
   document.getElementById('pos-cards').innerHTML = html;
 }
 
-// ═══════════════════════════════════════════════════════════════
-//  CHART ENGINE
-// ═══════════════════════════════════════════════════════════════
+// chart
 function initChart() {
   const container = document.getElementById('chart-container');
   container.innerHTML = '';
@@ -129,9 +127,7 @@ function updateCandle(price, ts) {
     `<span style="color:${color}">${chgStr}</span>`;
 }
 
-// ═══════════════════════════════════════════════════════════════
-//  WEBSOCKET  (uses state.marketType)
-// ═══════════════════════════════════════════════════════════════
+// websocket (uses state.marketType)
 function connect(sym) {
   state.connectGen++;
   const gen = state.connectGen;
@@ -185,19 +181,17 @@ function connect(sym) {
   ws2.onmessage = (e) => {
     if (state.connectGen !== gen) return;
     const data = JSON.parse(e.data);
-    // In backtest mode the server sets `T` to the current wall clock so
-    // the strategy's Date.now()-based comparisons stay valid, and exposes
-    // the original market timestamp as `mT`. Use the market timestamp
-    // for the tape display and candle bucketing so the chart fills with
-    // market-time candles instead of being smeared into a few wall-time
-    // candles when replaying at >1x.
+    // in backtest the server sets `T` to wall clock so the strategy's Date.now()
+    // math stays valid, and carries the real market time in `mT`. use market time
+    // for tape/candle bucketing, else fast replay (>1x) smears everything into a
+    // few wall-time candles.
     const marketTs = (typeof data.mT === 'number') ? data.mT : data.T;
     const trade = {
       price: parseFloat(data.p),
       qty:   parseFloat(data.q),
       side:  data.m ? 'SELL' : 'BUY',
-      ts:    data.T,       // wall clock — keeps Date.now() math working
-      mTs:   marketTs,     // market time — for tape/candle/chart
+      ts:    data.T,       // wall clock, keeps Date.now() math working
+      mTs:   marketTs,     // market time, for tape/candle/chart
     };
     state.lastPrice = trade.price;
     state.lastSide  = trade.side;
@@ -228,10 +222,7 @@ function setConnStatus(s) {
   document.getElementById('conn-dot').className = s;
 }
 
-// ═══════════════════════════════════════════════════════════════
-//  RENDER: HEADER, BOOK, TAPE, BLOTTER  (unchanged except for
-//  possible formatting differences due to decimals)
-// ═══════════════════════════════════════════════════════════════
+// render: header, book, tape, blotter
 let lastRenderedPrice = null;
 function updateHeader() {
   const bb = bestBid(), ba = bestAsk();
@@ -360,9 +351,7 @@ function appendFillLog(order, price, qty, reason) {
     `background:${isBuy ? '#00d97e' : '#f03c3c'};color:#000;font-weight:700;padding:1px 4px;border-radius:2px`, 'color:inherit');
 }
 
-// ═══════════════════════════════════════════════════════════════
-//  UI EVENTS
-// ═══════════════════════════════════════════════════════════════
+// ui events
 function setMsg(text, color = 'var(--text2)') {
   const el = document.getElementById('entry-msg');
   el.textContent = text;
@@ -401,7 +390,6 @@ function changeSymbol(sym) {
   const hasStableQuote = knownQuotes.some(q => sym.endsWith(q));
   const hasAltQuote    = knownAltQuotes.some(q => sym.endsWith(q) && sym.length > q.length + 1);
   if (!hasStableQuote && !hasAltQuote) sym += 'USDT';
-  // Determine market type
   state.marketType = SPOT_FX_SYMBOLS.has(sym) ? 'spot' : 'futures';
   state.symbol = sym;
   detectDecimals(sym);

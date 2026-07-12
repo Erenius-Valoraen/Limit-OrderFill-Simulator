@@ -26,11 +26,8 @@ document.getElementById('clear-saved-trades-btn').addEventListener('click', clea
 document.getElementById('analysis-btn').addEventListener('click', openAnalysisPage);
 document.addEventListener('keydown', (e) => { if (e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT') return; if (e.key === 'b' || e.key === 'B') joinBid(); if (e.key === 'a' || e.key === 'A') joinAsk(); if (e.key === 'c' || e.key === 'C') { const n = cancelAll(); setMsg(`Cancelled ${n} order(s)`, 'var(--yellow)'); } if (e.key === 'Escape') { if (state.selectedOrderId) { cancelOrder(state.selectedOrderId); state.selectedOrderId = null; } } });
 
-// ═══════════════════════════════════════════════════════════════
-//  BOOT — backtest-aware
-//  Pulls contract metadata from the backtest server, configures
-//  symbol/price-dec/qty-dec/fee-model accordingly, then starts WS.
-// ═══════════════════════════════════════════════════════════════
+// boot (backtest-aware): pull contract metadata from the server, set
+// symbol/price-dec/qty-dec/fee-model, then start WS.
 async function bootBacktest() {
   let s;
   try {
@@ -39,7 +36,7 @@ async function bootBacktest() {
     s = { symbol: 'NQ', instrument: 'UNKNOWN', tick_size: 0.25, price_dec: 2, is_futures: true };
   }
 
-  // Cache contract info globally so feeForFill() can switch model.
+  // cache contract info globally so feeForFill() can pick the right model
   window.__backtest.contract = {
     symbol: s.symbol || 'NQ',
     instrument: s.instrument || 'UNKNOWN',
@@ -48,12 +45,10 @@ async function bootBacktest() {
     is_futures: s.is_futures !== false,
   };
 
-  // Apply to state
   state.symbol   = window.__backtest.contract.symbol;
   state.priceDec = window.__backtest.contract.price_dec;
   state.qtyDec   = window.__backtest.contract.is_futures ? 0 : 4;
 
-  // Header label
   const hdrSym = document.getElementById('header-sym');
   if (hdrSym) hdrSym.textContent =
     `${state.symbol} (BACKTEST · ${window.__backtest.contract.instrument})`;
@@ -64,7 +59,7 @@ async function bootBacktest() {
     symInput.title = 'Symbol is fixed by the replayed file';
   }
 
-  // Qty input: integer-only when futures, with sensible default of 1 contract
+  // qty input: integer-only for futures, default 1 contract
   const qtyIn = document.getElementById('qty-input');
   if (qtyIn && window.__backtest.contract.is_futures) {
     qtyIn.step = '1';
@@ -73,16 +68,15 @@ async function bootBacktest() {
       ? String(Math.max(1, Math.floor(parseFloat(qtyIn.value))))
       : '1';
     qtyIn.placeholder = '1';
-    // Round any non-integer typing back to int on blur
+    // snap typed non-integers back to int on blur
     qtyIn.addEventListener('blur', () => {
       const v = parseFloat(qtyIn.value);
       if (Number.isFinite(v)) qtyIn.value = String(Math.max(1, Math.round(v)));
-      // Re-sync running strategy
       if (typeof syncStrategyQty === 'function') syncStrategyQty();
     });
   }
 
-  // Fee inputs: re-label and default to $/contract for futures
+  // fee inputs: relabel and default to $/contract for futures
   const makerIn = document.getElementById('maker-fee-input');
   const takerIn = document.getElementById('taker-fee-input');
   if (window.__backtest.contract.is_futures) {
@@ -96,20 +90,18 @@ async function bootBacktest() {
     }
     if (typeof syncFeeConfig === 'function') syncFeeConfig();
   }
-  // Mark inputs as touched once user modifies them so we don't overwrite later
+  // once the user edits a fee input, don't overwrite it later
   for (const el of [makerIn, takerIn]) {
     if (el) el.addEventListener('input', () => { el.dataset.touched = '1'; });
   }
 
-  // Start WS — backtest server will simply not send events until Play.
+  // start WS; the backtest server sends no events until Play
   connect(state.symbol);
   refreshPositions();
 }
 bootBacktest();
 
-// ═══════════════════════════════════════════════════════════════
-//  BACKTEST PLAY BAR — wired to /api/control + /api/status
-// ═══════════════════════════════════════════════════════════════
+// backtest play bar, wired to /api/control + /api/status
 (function () {
   const playBtn   = document.getElementById('bt-play-btn');
   const pauseBtn  = document.getElementById('bt-pause-btn');
@@ -151,19 +143,19 @@ bootBacktest();
     const date = seekSel.value;
     if (!date) return;
     await ctrl('seek', { date });
-    seekSel.value = '';                   // reset to placeholder
+    seekSel.value = '';                   // back to placeholder
   });
 
-  // Backtest-aware strategy gating: prevent starting a strategy with the
-  // backtest paused (the strategy would just spin on stale state).
+  // don't let a strategy start while the backtest is paused, it would just
+  // spin on stale state.
   function refreshStrategyGate(playing) {
     const anyRunning =
       (window.OrderFlowPredictor?.status?.().running) ||
       (window.MeanReversionStrategy?.status?.().running) ||
       (window.AutoMM?.status?.().running);
-    // Don't fight the existing strategy enable/disable logic — only forbid
-    // STARTING from a paused state. Once running, the timer is auto-gated
-    // by the setInterval override at the top of this file.
+    // only forbid starting from a paused state; don't fight the normal
+    // enable/disable logic. once running, the timer is auto-gated by the
+    // setInterval override at the top of this file.
     if (!playing && !anyRunning) {
       if (stratStartBtn) {
         stratStartBtn.disabled = true;
@@ -192,7 +184,7 @@ bootBacktest();
       }
       if (rthChk.checked !== !!s.rth_only) rthChk.checked = !!s.rth_only;
 
-      // Refresh seek list when available_dates changes
+      // rebuild seek list when available_dates changes
       const rthSet = new Set(s.rth_dates || []);
       const datesKey = (s.available_dates || []).join(',') + '|' + (s.rth_dates || []).join(',');
       if (datesKey !== lastDatesKey) {
@@ -217,5 +209,5 @@ bootBacktest();
     }
   }
   pollStatus();
-  _rawSetInterval(pollStatus, 500);     // use raw — don't gate ourselves
+  _rawSetInterval(pollStatus, 500);     // use raw, don't gate ourselves
 })();

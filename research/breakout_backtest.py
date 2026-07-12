@@ -1,29 +1,24 @@
 #!/usr/bin/env python3
 """
-breakout_backtest.py — Sensitive trend-following / breakout strategy on 1s NQ
-candles (the candles.csv produced by make_candles.py).
+breakout_backtest.py: trend-following / breakout strategy on 1s NQ candles
+(candles.csv from make_candles.py). Flat by the close each RTH day.
 
-Strategy (per RTH day, flat by the close)
------------------------------------------
 Entry (long; short is the mirror):
-  - close breaks ABOVE the highest high of the prior `lookback` candles, by a
-    buffer of max(1 tick, buf_atr * ATR)             [breakout]
-  - fast EMA > slow EMA                               [trend alignment]
-  - close > close `mom_n` candles ago                 [momentum confirm]
-  Fill at the NEXT candle's open + `slip` ticks (market taker, no lookahead).
+  - close breaks above the highest high of the prior `lookback` candles by a
+    buffer of max(1 tick, buf_atr * ATR)
+  - fast EMA > slow EMA (trend alignment)
+  - close > close `mom_n` candles ago (momentum confirm)
+  Fill at the next candle's open + `slip` ticks (taker, no lookahead).
 
 Exit (whichever hits first):
   - initial hard stop: entry -/+ max(min_stop ticks, stop_atr * ATR_at_entry)
-  - trailing stop: lowest low of the last `exit_lookback` candles (Donchian /
-    chandelier style) — ratchets with the trend, this is what lets a winner run
-    5-30 candles instead of getting scratched on noise
+  - trailing stop: Donchian low of the last `exit_lookback` candles; ratchets
+    with the trend so a winner can run instead of getting scratched on noise
   - time stop: max_hold candles
-  Fill at the stop level -/+ `slip` ticks (or the close on a time stop).
+  Fill at the stop -/+ `slip` ticks (or the close on a time stop).
 
-Costs (same realism as backtest_cli):
-  - 1 tick of slippage per side (you cross to take liquidity)
-  - $`fee`/contract per side (CME)
-  - PnL dollarized with $`point_value`/pt (E-mini NQ = 20)
+Costs (same as backtest_cli): 1 tick slippage/side, $`fee`/contract/side (CME),
+PnL dollarized with $`point_value`/pt (NQ = 20).
 
 Usage:
   python3 breakout_backtest.py candles.csv
@@ -39,7 +34,6 @@ from collections import defaultdict
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
-# This script lives in <root>/research/; candles live in <root>/data/.
 DATA_DIR = Path(__file__).resolve().parent.parent / "data"
 
 
@@ -78,7 +72,7 @@ def ema(values: List[float], n: int) -> List[float]:
 
 
 def atr_series(h: List[float], l: List[float], c: List[float], n: int) -> List[float]:
-    """Wilder-ish ATR (simple rolling mean of true range)."""
+    """ATR as a simple rolling mean of true range."""
     tr = [0.0] * len(c)
     for i in range(len(c)):
         if i == 0:
@@ -125,7 +119,7 @@ def run_day(date: str, rows: List[tuple], cfg: dict) -> Tuple[List[Trade], dict]
     def close_trade(side, i_out, px_out, reason):
         nonlocal pos
         gross = (px_out - entry_px) if side > 0 else (entry_px - px_out)
-        net = gross * mult - 2 * fee          # slippage already in px_in/px_out
+        net = gross * mult - 2 * fee          # slippage already baked into px_in/px_out
         tr = Trade()
         tr.date, tr.side = date, "LONG" if side > 0 else "SHORT"
         tr.i_in, tr.i_out = entry_i, i_out
@@ -137,7 +131,7 @@ def run_day(date: str, rows: List[tuple], cfg: dict) -> Tuple[List[Trade], dict]
         pos = 0
 
     for i in range(n):
-        # 1) execute a pending entry at this candle's open
+        # execute a pending entry at this candle's open
         if pending is not None:
             side = 1 if pending[0] == "BUY" else -1
             entry_atr = pending[1]
@@ -151,7 +145,7 @@ def run_day(date: str, rows: List[tuple], cfg: dict) -> Tuple[List[Trade], dict]
         if i < warm:
             continue
 
-        # 2) manage an open position (intrabar exits)
+        # manage an open position (intrabar exits)
         if pos != 0:
             held = i - entry_i
             if pos > 0:
@@ -171,10 +165,10 @@ def run_day(date: str, rows: List[tuple], cfg: dict) -> Tuple[List[Trade], dict]
                 elif held >= cfg["max_hold"]:
                     close_trade(pos, i, c[i] + slip, "time")
             if pos != 0:
-                continue          # still in a position; no new signal this bar
+                continue          # still in a position, no new signal this bar
             cooldown_until = i + cfg["cooldown"]
 
-        # 3) flat -> look for a breakout+trend signal (act next bar)
+        # flat: look for a breakout+trend signal (act next bar)
         if pos == 0 and pending is None and i >= cooldown_until and i + 1 < n:
             prior_hi = max(h[i - lb:i])
             prior_lo = min(l[i - lb:i])
@@ -188,7 +182,7 @@ def run_day(date: str, rows: List[tuple], cfg: dict) -> Tuple[List[Trade], dict]
             elif short_sig:
                 pending = ("SELL", at[i]); diag["signals"] += 1
 
-    # force flat at the session close
+    # flat at the session close
     if pos != 0:
         px = c[n - 1] - slip if pos > 0 else c[n - 1] + slip
         close_trade(pos, n - 1, px, "eod")
@@ -208,7 +202,7 @@ def report(all_trades: List[Trade], diag_tot: dict, cfg: dict, days: int) -> Non
     gl = -sum(t.net for t in losses)
     holds = [t.i_out - t.i_in for t in all_trades]
 
-    # equity curve / drawdown (trade-sequential)
+    # equity curve / drawdown
     eq = peak = dd = 0.0
     for t in all_trades:
         eq += t.net; peak = max(peak, eq); dd = max(dd, peak - eq)
@@ -245,7 +239,6 @@ def report(all_trades: List[Trade], diag_tot: dict, cfg: dict, days: int) -> Non
     sd = math.sqrt(sum((x - mean) ** 2 for x in nets) / n) if n > 1 else 0
     line("Per-trade Sharpe", f"{mean/sd:.3f}" if sd > 0 else "n/a")
     print("-" * 58)
-    # per-day
     byd: Dict[str, list] = defaultdict(lambda: [0, 0.0])
     for t in all_trades:
         byd[t.date][0] += 1; byd[t.date][1] += t.net

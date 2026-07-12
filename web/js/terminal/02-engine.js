@@ -237,9 +237,7 @@ function recordExecution(order, price, qty, reason, ts) {
   }
 }
 
-// ═══════════════════════════════════════════════════════════════
-//  POSITION TRACKING
-// ═══════════════════════════════════════════════════════════════
+// position tracking
 function feePercentForReason(reason) {
   return reason === 'MARKET' || reason === 'SWEEP' ? state.takerFeePercent : state.makerFeePercent;
 }

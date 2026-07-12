@@ -1,6 +1,4 @@
-// ═══════════════════════════════════════════════════════════════
-//  STATE
-// ═══════════════════════════════════════════════════════════════
+// global state
 const state = {
   symbol: 'BTCUSDT',
   marketType: 'futures',     // 'futures' or 'spot'
@@ -42,14 +40,12 @@ const state = {
 const QUEUE_EPS = 1e-10;
 const QUEUE_CANCEL_BEHIND_BIAS = 1.35; // >1 makes cancels slightly more likely behind us.
 
-// ── Known Spot‑only FX pairs (Binance). Add as needed.
+// spot-only FX pairs on Binance, add as needed
 const SPOT_FX_SYMBOLS = new Set([
   'EURUSDT','GBPUSDT','AUDUSDT','NZDUSDT',
-  'USDCAD','USDCHF','USDJPY','EURUSD','GBPUSD'  // note: Binance lists EURUSD etc. with USDT? Actually only against USDT.
+  'USDCAD','USDCHF','USDJPY','EURUSD','GBPUSD'  // Binance lists these against USDT only
 ]);
-// ═══════════════════════════════════════════════════════════════
-//  FORMATTING
-// ═══════════════════════════════════════════════════════════════
+// formatting
 function fp(p) {
   return Number(p).toLocaleString('en-US', {
     minimumFractionDigits: state.priceDec,
@@ -70,12 +66,10 @@ function genId() {
   return Math.random().toString(36).slice(2,10).toUpperCase();
 }
 
-// ═══════════════════════════════════════════════════════════════
-//  DECIMAL DETECTION
-// ═══════════════════════════════════════════════════════════════
+// decimal detection
 function detectDecimals(sym) {
   sym = sym.toUpperCase();
-  // Spot FX pairs typically have 5 price decimals and 2 quantity decimals
+  // spot FX: 5 price decimals, 2 qty decimals
   if (SPOT_FX_SYMBOLS.has(sym)) {
     state.priceDec = 5;
     state.qtyDec = 2;
@@ -88,9 +82,7 @@ function detectDecimals(sym) {
   else                                             { state.priceDec = 4; state.qtyDec = 3; }
 }
 
-// ═══════════════════════════════════════════════════════════════
-//  ORDER BOOK LOGIC
-// ═══════════════════════════════════════════════════════════════
+// order book
 function bestBid() {
   const keys = Object.keys(state.bids);
   if (!keys.length) return null;
@@ -177,6 +169,4 @@ function applyDepthEvent(ev) {
   state.lastUpdateId = ev.u;
 }
 
-// ═══════════════════════════════════════════════════════════════
-//  FILL ENGINE  (unchanged)
-// ═══════════════════════════════════════════════════════════════
+// fill engine

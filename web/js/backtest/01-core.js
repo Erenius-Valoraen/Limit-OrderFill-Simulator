@@ -1,11 +1,6 @@
-// ═══════════════════════════════════════════════════════════════
-//  BACKTEST RUNTIME GATE
-//  Capture the raw setInterval/setTimeout BEFORE anything else, then
-//  override setInterval globally so any timer registered later (the
-//  strategies use setInterval for their tick loop) is automatically
-//  paused while the backtest is paused. Internal polling (this file)
-//  uses _rawSetInterval directly so it keeps running.
-// ═══════════════════════════════════════════════════════════════
+// backtest runtime gate: grab the raw setInterval/setTimeout first, then
+// override setInterval so strategy tick loops auto-pause when the backtest is
+// paused. our own polling uses _rawSetInterval so it keeps running.
 const _rawSetInterval = window.setInterval.bind(window);
 const _rawSetTimeout  = window.setTimeout.bind(window);
 window.__backtest = {
@@ -13,9 +8,8 @@ window.__backtest = {
   contract: null,                       // {symbol, instrument, tick_size, price_dec, is_futures}
 };
 window.setInterval = function (cb, ms, ...rest) {
-  // Strategy tick intervals fall in this band (OFP 350, MRV 450, AutoMM 750).
-  // Everything else (e.g. UI polling at 500ms IS in this band) — to avoid
-  // gating our own internals, we use _rawSetInterval explicitly for them.
+  // strategy tick intervals land in this band (OFP 350, MRV 450, AutoMM 750).
+  // our own 500ms polling is in this band too, so it uses _rawSetInterval directly.
   if (typeof ms === 'number' && ms >= 200 && ms <= 5000) {
     return _rawSetInterval(function () {
       if (window.__backtest.playing) {
@@ -26,9 +20,7 @@ window.setInterval = function (cb, ms, ...rest) {
   return _rawSetInterval(cb, ms, ...rest);
 };
 
-// ═══════════════════════════════════════════════════════════════
-//  STATE
-// ═══════════════════════════════════════════════════════════════
+// global state
 const state = {
   symbol: 'BTCUSDT',
   marketType: 'futures',     // 'futures' or 'spot'
@@ -70,14 +62,12 @@ const state = {
 const QUEUE_EPS = 1e-10;
 const QUEUE_CANCEL_BEHIND_BIAS = 1.35; // >1 makes cancels slightly more likely behind us.
 
-// ── Known Spot‑only FX pairs (Binance). Add as needed.
+// spot-only FX pairs on Binance, add as needed
 const SPOT_FX_SYMBOLS = new Set([
   'EURUSDT','GBPUSDT','AUDUSDT','NZDUSDT',
-  'USDCAD','USDCHF','USDJPY','EURUSD','GBPUSD'  // note: Binance lists EURUSD etc. with USDT? Actually only against USDT.
+  'USDCAD','USDCHF','USDJPY','EURUSD','GBPUSD'  // Binance lists these against USDT only
 ]);
-// ═══════════════════════════════════════════════════════════════
-//  FORMATTING
-// ═══════════════════════════════════════════════════════════════
+// formatting
 function fp(p) {
   return Number(p).toLocaleString('en-US', {
     minimumFractionDigits: state.priceDec,
@@ -98,12 +88,10 @@ function genId() {
   return Math.random().toString(36).slice(2,10).toUpperCase();
 }
 
-// ═══════════════════════════════════════════════════════════════
-//  DECIMAL DETECTION
-// ═══════════════════════════════════════════════════════════════
+// decimal detection
 function detectDecimals(sym) {
   sym = sym.toUpperCase();
-  // Spot FX pairs typically have 5 price decimals and 2 quantity decimals
+  // spot FX: 5 price decimals, 2 qty decimals
   if (SPOT_FX_SYMBOLS.has(sym)) {
     state.priceDec = 5;
     state.qtyDec = 2;
@@ -116,9 +104,7 @@ function detectDecimals(sym) {
   else                                             { state.priceDec = 4; state.qtyDec = 3; }
 }
 
-// ═══════════════════════════════════════════════════════════════
-//  ORDER BOOK LOGIC
-// ═══════════════════════════════════════════════════════════════
+// order book
 function bestBid() {
   const keys = Object.keys(state.bids);
   if (!keys.length) return null;
@@ -190,9 +176,9 @@ async function fetchSnapshot() {
 function applyDepthEvent(ev) {
   if (!state.snapshotLoaded) { state.bufferedEvents.push(ev); return; }
   if (ev.r) {
-    // Full-book resync from the server (after a seek or an RTH skip gap).
-    // Drop the stale book entirely and rebuild from this message — prevents
-    // layering fresh diffs onto pre-seek levels (which showed as a crossed book).
+    // full-book resync from server (after a seek or RTH skip gap). drop the
+    // stale book and rebuild from this msg, otherwise fresh diffs layer onto
+    // pre-seek levels and the book shows up crossed.
     state.bids = {};
     state.asks = {};
     state.lastUpdateId = 0;
@@ -214,6 +200,4 @@ function applyDepthEvent(ev) {
   state.lastUpdateId = ev.u;
 }
 
-// ═══════════════════════════════════════════════════════════════
-//  FILL ENGINE  (unchanged)
-// ═══════════════════════════════════════════════════════════════
+// fill engine

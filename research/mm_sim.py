@@ -1,19 +1,19 @@
 #!/usr/bin/env python3
 """
-mm_sim.py — Passive market-maker simulation on NQ with REAL queue dynamics.
+mm_sim.py: passive market-maker sim on NQ with queue dynamics.
 
-Quotes 1 lot at the best bid and 1 lot at the best ask (joins the touch),
-re-quoting when the touch moves, capped by an inventory limit. Fills are
-modeled with terminal.html's queue engine, ported faithfully:
-  - queue position (queueAhead = size resting ahead of you when you join),
+Quotes 1 lot at the best bid and 1 at the best ask (joins the touch), re-quoting
+when the touch moves, capped by an inventory limit. Fills use terminal.html's
+queue engine, ported over:
+  - queue position (queueAhead = size resting ahead when you join),
   - cancellation modeling (level-size drops split into trade-depletion vs
-    cancels, with a log-weighted cancel-ahead-of-you probability),
+    cancels, log-weighted cancel-ahead-of-you probability),
   - trade fills (a marketable trade burns your queue then fills you),
   - sweep fills (price trading through your resting order).
 
-This tests the spread-capture edge: a passive round-trip earns 1 tick ($5)
-minus 2x fees, but only if a back-of-queue 1-lot actually fills and inventory
-doesn't run against you. NQ has NO maker rebate (flat ~$1.25/side).
+Tests the spread-capture edge: a passive round-trip earns 1 tick ($5) minus 2x
+fees, but only if a back-of-queue 1-lot actually fills and inventory doesn't run
+against you. NQ has no maker rebate (flat ~$1.25/side).
 
 Reads the L2 event cache (build_ofp_cache.py): ofp_cache/<date>.bin + meta.json.
 
@@ -30,13 +30,12 @@ from pathlib import Path
 
 import numpy as np
 
-# This script lives in <root>/research/; the OFP cache lives in <root>/data/ofp_cache/.
 DATA_DIR = Path(__file__).resolve().parent.parent / "data"
 
 DT = np.dtype([('tag', 'u1'), ('pad', 'u1'), ('qty', '<u2'), ('ts', '<u4'), ('px', '<u4')])
 QEPS = 1e-9
 CANCEL_BIAS = 1.35
-PESSIMISTIC = True      # default: queue advances ONLY via trades (no cancel-ahead credit)
+PESSIMISTIC = True      # queue advances only via trades (no cancel-ahead credit)
 
 
 def cancel_ahead_prob(order, next_qty):
@@ -82,7 +81,7 @@ def check_trade_fill(order, tpx, tqty, tside, now):
     if not is_buy_fill and not is_sell_fill:
         return 0.0, order['px'], None
     rem = order['qty'] - order['filled']
-    if tpx == order['px']:                   # trade AT our quoted price
+    if tpx == order['px']:                   # trade at our quoted price
         order['pd'] += tqty
         order['pdts'] = now
         eff = tqty
@@ -96,14 +95,14 @@ def check_trade_fill(order, tpx, tqty, tside, now):
             leftover = eff - burned
             if leftover <= 0:
                 return 0.0, order['px'], None
-            return min(leftover, rem), order['px'], 'queue'   # queue ahead was depleted
+            return min(leftover, rem), order['px'], 'queue'   # queue ahead depleted
         return min(eff, rem), order['px'], 'queue'
-    else:                                   # trade printed THROUGH our price
-        return min(tqty, rem), order['px'], 'through'         # price ran past us (adverse)
+    else:                                   # trade printed through our price (adverse)
+        return min(tqty, rem), order['px'], 'through'
 
 
 def new_order(side, px_ticks, qty, now, latency):
-    # placed now, but only LIVE (fillable, queue captured) at now+latency
+    # placed now, fillable (queue captured) only at now+latency
     return {'side': side, 'px': px_ticks, 'qty': qty, 'filled': 0.0,
             'qa': 0.0, 'llq': 0.0, 'pd': 0.0, 'pdts': 0,
             'radv': 0.0, 'radvts': 0, 'placed': now,
@@ -128,7 +127,7 @@ def run_day(date, bin_path, cfg):
     QMULT = cfg['queue_mult']
     adverse_fills = 0
     quotes_placed = 0
-    # fill breakdown: reason -> [count, markout_ticks_sum]
+    # reason -> [count, markout_ticks_sum]
     by_reason = {'queue': [0, 0.0], 'through': [0, 0.0], 'sweep': [0, 0.0], 'eod': [0, 0.0]}
 
     def best_bid():
@@ -147,8 +146,8 @@ def run_day(date, bin_path, cfg):
             bid_fills += 1
         else:
             ask_fills += 1
-        # immediate markout vs the mid at fill time: + = favorable (we made the
-        # spread), - = adverse (price had already moved past us when we filled).
+        # markout vs mid at fill time: + favorable (made the spread),
+        # - adverse (price had already moved past us)
         bbn = best_bid(); ban = best_ask()
         if bbn is not None and ban is not None:
             mid = (bbn + ban) / 2.0
@@ -165,7 +164,7 @@ def run_day(date, bin_path, cfg):
         else:
             close = min(fqty, abs(inv))
             pnl = (avg - price) if is_buy else (price - avg)
-            realized += pnl * close          # in ticks
+            realized += pnl * close          # ticks
             rem = fqty - close
             inv = inv + fqty if is_buy else inv - fqty
             if abs(inv) < 1e-9:
@@ -179,14 +178,14 @@ def run_day(date, bin_path, cfg):
         if ord is None:
             return None
         if not ord['is_live'] and now >= ord['live_at']:
-            ord['is_live'] = True            # order reaches the exchange; capture queue NOW
-            # queue ahead = visible aggregate size x inflation (models faster
-            # traders / hidden orders ahead of a retail 1-lot that we can't see)
+            ord['is_live'] = True            # reaches the exchange; capture queue now
+            # queue ahead = visible size x inflation (faster traders / hidden
+            # orders ahead of a retail 1-lot that we can't see)
             ord['qa'] = book.get(ord['px'], 0) * QMULT
             ord['llq'] = ord['qa']
             ord['placed'] = ord['live_at']
         if ord['dying'] and now >= ord['cancel_at']:
-            return None                      # cancel finally lands (no fill)
+            return None                      # cancel lands, no fill
         return ord
 
     for r in range(n):
@@ -194,13 +193,13 @@ def run_day(date, bin_path, cfg):
         bid_ord = lifecycle(bid_ord, bids)
         ask_ord = lifecycle(ask_ord, asks)
 
-        if tag & 1:                          # ---- trade ----
+        if tag & 1:                          # trade
             tside = 'BUY' if ((tag >> 1) & 1) == 0 else 'SELL'
             if bid_ord is not None and bid_ord['is_live']:
                 fq, fpx, reason = check_trade_fill(bid_ord, px, q, tside, now)
                 if fq > 0:
                     if bid_ord['dying']:
-                        adverse_fills += 1   # filled while we were trying to cancel
+                        adverse_fills += 1   # filled while trying to cancel
                     fill('BUY', fpx, fq, reason); bid_ord = None
             if ask_ord is not None and ask_ord['is_live']:
                 fq, fpx, reason = check_trade_fill(ask_ord, px, q, tside, now)
@@ -210,7 +209,7 @@ def run_day(date, bin_path, cfg):
                     fill('SELL', fpx, fq, reason); ask_ord = None
             continue
 
-        # ---- depth ----
+        # depth
         side = 'BID' if ((tag >> 1) & 1) == 0 else 'ASK'
         book = bids if side == 'BID' else asks
         prev = book.get(px, 0)
@@ -228,9 +227,9 @@ def run_day(date, bin_path, cfg):
         if bb is None or ba is None or ba <= bb:
             continue
 
-        # sweep fills (price traded through a live resting order) — adverse
+        # sweep fills: price traded through a live resting order (adverse)
         if bid_ord is not None and bid_ord['is_live'] and now - bid_ord['placed'] > 200 and bid_ord['qa'] <= 0:
-            if ba < bid_ord['px']:           # price ran through us -> fill at OUR limit (adverse)
+            if ba < bid_ord['px']:           # ran through us -> fill at our limit
                 adverse_fills += 1
                 fill('BUY', bid_ord['px'], bid_ord['qty'] - bid_ord['filled'], 'sweep'); bid_ord = None
         if ask_ord is not None and ask_ord['is_live'] and now - ask_ord['placed'] > 200 and ask_ord['qa'] <= 0:
@@ -238,9 +237,9 @@ def run_day(date, bin_path, cfg):
                 adverse_fills += 1
                 fill('SELL', ask_ord['px'], ask_ord['qty'] - ask_ord['filled'], 'sweep'); ask_ord = None
 
-        # (re)quote at the touch with latency: a stale live quote enters a 50ms
-        # cancel window (still fillable -> adverse); a new quote is sent but only
-        # goes live 50ms later. Pending (not-yet-live) quotes are left as-is.
+        # (re)quote at the touch with latency: a stale live quote enters its
+        # cancel window (still fillable, adverse); the new quote goes live LAT ms
+        # later. Not-yet-live quotes are left alone.
         if bid_ord is not None and bid_ord['is_live'] and bid_ord['px'] != bb and not bid_ord['dying']:
             bid_ord['dying'] = True; bid_ord['cancel_at'] = now + LAT
         if bid_ord is None and inv < max_inv:
@@ -288,7 +287,7 @@ def main():
     meta = json.load((cache / "meta.json").open(encoding="utf-8"))
     tick = meta.get("tick", 0.25)
     pv = args.point_value
-    # PnL is tracked in ticks; $ per tick = tick * point_value
+    # PnL in ticks; $/tick = tick * point_value
     dollar_per_tick = tick * pv
     cfg = vars(args)
 
@@ -330,7 +329,7 @@ def main():
     print(f"  NET PnL              {'+' if tot_net>=0 else '-'}${abs(tot_net):,.2f}")
     if tot_fills:
         print(f"  Net per fill         {'+' if tot_net>=0 else '-'}${abs(tot_net)/tot_fills:.2f}")
-    # ---- fill breakdown by reason ----
+    # fill breakdown by reason
     tot_quotes = sum(r.get('quotes_placed', 0) for _, r, _ in rows)
     agg = {'queue': [0, 0.0], 'through': [0, 0.0], 'sweep': [0, 0.0], 'eod': [0, 0.0]}
     for _, r, _ in rows:

@@ -1,33 +1,19 @@
 """
-Headless paper-trading service that mirrors terminal.html's architecture.
+The trading core. Same fill logic as terminal.html, but headless: it reads
+Binance directly and writes fills straight to disk, no browser involved.
 
-What this is:
-  - Connects to Binance WebSocket (depth + aggTrade) for the configured symbol.
-  - Maintains a live order book locally (snapshot + diff updates).
-  - Runs the OrderFlowPredictor strategy in market-execution mode.
-  - Paper-fills market orders against the live top-of-book VWAP.
-  - Writes every fill to disk IMMEDIATELY in day-keyed JSONL + CSV files —
-    no prompts, no buffering past one fill, no browser dependency.
-  - Snapshots session state (positions, realized PnL, counters) after every
-    fill so a crash/restart resumes exactly where it left off.
+  - connects to Binance (depth + aggTrade) for one symbol
+  - keeps a local order book (snapshot + diffs)
+  - runs the OrderFlowPredictor strategy in market-order mode
+  - paper-fills market orders at the live top-of-book VWAP
+  - appends every fill to disk right away (jsonl + csv) and snapshots session
+    state after each one, so a restart resumes where it left off
 
-Run it:
-    pip install -r requirements.txt
-    python paper_trader.py
-
-To keep your Mac from sleeping while it runs:
-    caffeinate -di python paper_trader.py
-
-Stop it with Ctrl-C — session state is flushed on shutdown.
-
-Output (under paper_data/):
-    trades_YYYY-MM-DD.jsonl   one JSON object per fill, append-only
-    trades_YYYY-MM-DD.csv     same fills, CSV with header
-    session_state.json        positions / PnL snapshot for restart
-    runner.log                console log mirror
-
-To analyze later: read any trades_*.jsonl with one line = one fill,
-or open the CSV in Excel / pandas / DuckDB.
+Output under data/paper_data/:
+    trades_YYYY-MM-DD.jsonl   one fill per line
+    trades_YYYY-MM-DD.csv     same, with a header
+    session_state.json        positions / pnl for restart
+    runner.log                log mirror
 """
 
 import asyncio
@@ -46,26 +32,23 @@ import aiohttp
 from aiohttp import web
 import websockets
 
-# ────────────────────────────────────────────────────────────────────────────────
-#  CONFIG — matches terminal.html / orderflow_predictor_strategy.js defaults.
-#  Edit these to change behaviour; no UI required.
-# ────────────────────────────────────────────────────────────────────────────────
+# config, mirrors the terminal.html / OFP defaults. edit here, no UI needed.
 SYMBOL = "BTCUSDT"
 MARKET_TYPE = "futures"          # "futures" (USD-M perp) or "spot"
-QTY = 1.0                        # contract size — editable live from dashboard
+QTY = 1.0                        # contract size, editable live from the dashboard
 
-# ── DATA SOURCE ────────────────────────────────────────────────────────────
-# 'live'              → Binance WebSocket (current behavior).
-# 'replay:<path>'     → JSONL file produced by BfsL2Exporter.cs in NinjaTrader.
+# data source
+# 'live'              -> Binance WebSocket (current behavior).
+# 'replay:<path>'     -> JSONL file produced by BfsL2Exporter.cs in NinjaTrader.
 DATA_SOURCE = "live"
-REPLAY_SPEED = 5.0               # 5× real-time during replay; raise for faster runs
+REPLAY_SPEED = 5.0               # 5x real-time during replay; raise for faster runs
 REPLAY_LOOP  = False             # restart replay from start after EOF
 
-# ── CONTRACT MODEL ─────────────────────────────────────────────────────────
-# 'crypto'  → fee = price × qty × fee_pct / 100 (Binance-style % of notional)
-# 'futures' → fee = qty × FIXED_FEE_PER_CONTRACT (CME-style flat $ per side)
+# contract model
+# 'crypto'  -> fee = price x qty x fee_pct / 100 (Binance-style % of notional)
+# 'futures' -> fee = qty x FIXED_FEE_PER_CONTRACT (CME-style flat $ per side)
 CONTRACT_MODEL = "crypto"
-FIXED_FEE_PER_CONTRACT = 1.29    # used when CONTRACT_MODEL == 'futures' (NQ retail ≈ $1.29/side)
+FIXED_FEE_PER_CONTRACT = 1.29    # for CONTRACT_MODEL == 'futures' (NQ retail is ~$1.29/side)
 MAKER_FEE_PCT = 0.0006
 TAKER_FEE_PCT = 0.0006
 LATENCY_MS = 300                 # simulated market-order RTT
@@ -82,9 +65,8 @@ TAKE_PROFIT_BPS = 4.0
 STOP_LOSS_BPS = 6.0
 MIN_SPREAD_BPS = 0.0
 MAX_SPREAD_BPS = 120.0
-# IMPORTANT: terminal.html's "Start" button overrides the OFP file's DEFAULTS for
-# these two — using stricter guards than what's hard-coded in the strategy file.
-# We mirror those overrides exactly so the Python tracks what the JS actually runs.
+# terminal.html's Start button overrides these two with stricter guards than the
+# strategy file's defaults. mirror them so Python runs what the JS actually runs.
 MAX_VOL_BPS = 250.0              # HTML runtime override (file default: 350)
 VOL_GUARD_SPREAD_MULT = 8.0      # HTML runtime override (file default: 10)
 MIN_TRADE_SAMPLES = 4
@@ -92,7 +74,7 @@ HISTORY_MAX = 120
 MAX_POSITION = max(0.006, QTY * 6)
 ALLOW_PYRAMIDING = False
 
-# This file lives in <root>/server/; runtime output goes to <root>/data/paper_data/.
+# output goes to <repo>/data/paper_data/
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 DATA_DIR = REPO_ROOT / "data" / "paper_data"
 DATA_DIR.mkdir(exist_ok=True)
@@ -104,9 +86,7 @@ STATUS_INTERVAL_S = 30           # console status print cadence
 HTTP_PORT_PRIMARY = 1000         # user-requested port (privileged on macOS)
 HTTP_PORT_FALLBACK = 8000        # used if 1000 is not bindable without root
 
-# ────────────────────────────────────────────────────────────────────────────────
-#  STATE
-# ────────────────────────────────────────────────────────────────────────────────
+# state
 bids: dict[float, float] = {}
 asks: dict[float, float] = {}
 last_update_id = 0
@@ -177,9 +157,7 @@ def position_qty(sym=SYMBOL):
     return positions.get(sym, {}).get("netQty", 0.0)
 
 
-# ────────────────────────────────────────────────────────────────────────────────
-#  ORDER BOOK SYNC (snapshot + diff stream, Binance-style)
-# ────────────────────────────────────────────────────────────────────────────────
+# order book sync (snapshot + diff stream)
 async def fetch_snapshot():
     global last_update_id, bids, asks, snapshot_loaded
     base = "https://fapi.binance.com/fapi/v1/depth" if MARKET_TYPE == "futures" \
@@ -223,9 +201,7 @@ def apply_depth_event(ev: dict):
     last_update_id = u
 
 
-# ────────────────────────────────────────────────────────────────────────────────
-#  FILL ACCOUNTING (mirror of terminal.html's updatePosition + executeFill)
-# ────────────────────────────────────────────────────────────────────────────────
+# fill accounting (mirrors terminal.html updatePosition + executeFill)
 def fee_pct_for_reason(reason: str) -> float:
     return TAKER_FEE_PCT if reason in ("MARKET", "SWEEP") else MAKER_FEE_PCT
 
@@ -276,11 +252,9 @@ def update_position(side: str, fill_price: float, fill_qty: float, reason: str):
     persist_session()
 
 
-# ────────────────────────────────────────────────────────────────────────────────
-#  PERSISTENCE — append-only JSONL + CSV, written synchronously on every fill.
+# persistence: append-only jsonl + csv, written on every fill.
 #  No prompts. No buffering. If the process crashes mid-flush, at most one
-#  fill could be lost (and even then only the JSONL tail line — CSV is durable).
-# ────────────────────────────────────────────────────────────────────────────────
+#  fill could be lost (and even then only the JSONL tail line, CSV is durable).
 CSV_COLS = ["ts", "iso", "strategy", "symbol", "side", "reason", "feeType",
             "price", "qty", "feePercentAtFill", "feePaidAtFill",
             "executionMode", "orderId", "id"]
@@ -294,10 +268,10 @@ def persist_execution(rec: dict) -> None:
     day = day_key(rec["ts"])
     jsonl_path = DATA_DIR / f"trades_{day}.jsonl"
     csv_path = DATA_DIR / f"trades_{day}.csv"
-    # JSONL append — one fill per line, no read-modify-write.
+    # JSONL append, one fill per line, no read-modify-write.
     with jsonl_path.open("a") as f:
         f.write(json.dumps(rec) + "\n")
-    # CSV append — write header if file is new.
+    # CSV append, write header if file is new.
     new_csv = not csv_path.exists()
     with csv_path.open("a", newline="") as f:
         w = csv.writer(f)
@@ -352,7 +326,7 @@ def load_session() -> bool:
     return True
 
 
-# ── Runtime-tunable config (persists across restarts) ──────────────────────
+# runtime-tunable config (persists across restarts)
 def load_runtime_config() -> None:
     """Override module defaults from runtime_config.json if it exists.
     Currently only `qty` is exposed; easy to extend."""
@@ -395,9 +369,7 @@ def update_config(qty=None) -> dict:
     return {"qty": QTY, "max_position": MAX_POSITION}
 
 
-# ────────────────────────────────────────────────────────────────────────────────
-#  MARKET ORDER SIMULATION (mirror of placeMarketOrder + marketFillPrice)
-# ────────────────────────────────────────────────────────────────────────────────
+# market order sim (mirrors placeMarketOrder + marketFillPrice)
 def market_fill_price(side: str, qty: float):
     levels = top_asks(20) if side == "BUY" else top_bids(20)
     remaining, notional, filled = qty, 0.0, 0.0
@@ -471,7 +443,7 @@ def check_pending_market_fills():
 
 
 def cancel_pending_market_orders():
-    """Mirror of JS `cancelOwned()` for market mode — cancel any market orders
+    """Mirror of JS `cancelOwned()` for market mode, cancel any market orders
     that haven't filled yet. A cancelled pending order will be reaped on the
     next pass of check_pending_market_fills without ever placing a fill."""
     for order in pending_market:
@@ -479,7 +451,7 @@ def cancel_pending_market_orders():
 
 
 def has_pending_market_on_side(side: str) -> bool:
-    """Mirror of JS `hasEntryOrder` — true if an unfilled, uncancelled market
+    """Mirror of JS `hasEntryOrder`, true if an unfilled, uncancelled market
     order on this side already exists."""
     return any(
         not o.get("cancelled") and o["side"] == side
@@ -487,9 +459,7 @@ def has_pending_market_on_side(side: str) -> bool:
     )
 
 
-# ────────────────────────────────────────────────────────────────────────────────
-#  TRADE HANDLER (also drives market-order fill timing)
-# ────────────────────────────────────────────────────────────────────────────────
+# trade handler (also drives market-order fill timing)
 def update_candle(price: float, ts_ms: int) -> None:
     """Aggregate a trade into the current OHLC candle (mirrors terminal.html)."""
     global current_candle
@@ -522,9 +492,7 @@ def handle_trade(trade: dict):
     check_pending_market_fills()
 
 
-# ────────────────────────────────────────────────────────────────────────────────
-#  OFP STRATEGY (port of orderflow_predictor_strategy.js, market mode)
-# ────────────────────────────────────────────────────────────────────────────────
+# ofp strategy (port of orderflow_predictor_strategy.js, market mode)
 def book_features():
     bb, ba = best_bid(), best_ask()
     if bb is None or ba is None or ba <= bb:
@@ -666,14 +634,14 @@ def strategy_tick():
 
     Flow (in order, matching the JS):
       1. compute signal
-      2. if skip → cancel owned market orders, set reason, return
+      2. if skip -> cancel owned market orders, set reason, return
       3. read live position
-      4. maybe_exit (may cancel + place market exit) — if fired, return
+      4. maybe_exit (may cancel + place market exit), if fired, return
       5. cooldown gate
-      6. neutral (|score| < threshold) → cancel owned, set reason, return
+      6. neutral (|score| < threshold) -> cancel owned, set reason, return
       7. pyramiding guard (sameDirectionPosition OR pending same-side order)
       8. entry: cancel any pending market order, then place new one
-      9. position-cap branch → cancel owned, set reason
+      9. position-cap branch -> cancel owned, set reason
     """
     global entry_ts, last_action_ts, last_signal, last_reason
     s = compute_signal()
@@ -719,9 +687,7 @@ def strategy_tick():
         cancel_pending_market_orders()
 
 
-# ────────────────────────────────────────────────────────────────────────────────
-#  ASYNC LOOPS
-# ────────────────────────────────────────────────────────────────────────────────
+# async loops
 async def depth_ws_loop():
     global snapshot_loaded
     base = "wss://fstream.binance.com/ws" if MARKET_TYPE == "futures" \
@@ -733,7 +699,7 @@ async def depth_ws_loop():
             buffered_events.clear()
             async with websockets.connect(url, ping_interval=20, ping_timeout=10) as ws:
                 log(f"depth WS connected ({url})")
-                # Fire-and-forget snapshot fetch — events buffer until it lands.
+                # Fire-and-forget snapshot fetch, events buffer until it lands.
                 asyncio.create_task(fetch_snapshot())
                 async for msg in ws:
                     try:
@@ -857,7 +823,7 @@ async def strategy_loop():
     while not shutdown_requested:
         try:
             # Drain any market orders whose latency window has elapsed BEFORE
-            # the strategy reads position — matches the JS where setTimeout
+            # the strategy reads position, matches the JS where setTimeout
             # fires fills at the latency deadline, well before the next tick.
             check_pending_market_fills()
             if strategy_enabled:

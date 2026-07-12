@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-volty_backtest.py — Faithful translation of TradingView's built-in
-"Volty Expan Close Strategy" onto the 1s NQ candles (candles.csv).
+volty_backtest.py: TradingView's built-in "Volty Expan Close Strategy" on the
+1s NQ candles (candles.csv).
 
 Pine source:
     length  = 5
@@ -10,25 +10,23 @@ Pine source:
     strategy.entry("VltClsLE", long,  stop = close + atrs)   # buy-STOP above
     strategy.entry("VltClsSE", short, stop = close - atrs)   # sell-STOP below
 
-What it really is
------------------
-An ALWAYS-IN-MARKET stop-and-reverse VOLATILITY BREAKOUT (momentum):
-  - buy-stop at close+atrs  -> goes long when price breaks UP through it
-  - sell-stop at close-atrs -> goes short when price breaks DOWN through it
-  - orders are re-priced every bar to the latest close +/- atrs
-  - because strategy.entry reverses, the opposite stop is the exit. There is
-    NO target / time stop — you flip on the opposite breakout.
+It's an always-in-market stop-and-reverse volatility breakout:
+  - buy-stop at close+atrs  -> long when price breaks up through it
+  - sell-stop at close-atrs -> short when price breaks down through it
+  - orders re-priced every bar to the latest close +/- atrs
+  - strategy.entry reverses, so the opposite stop is the exit. No target/time
+    stop, you just flip on the opposite breakout.
 
-The flip trap: implementing "long at close+atrs" as a LIMIT (buy below) / sell
-above would invert this into mean-reversion — the opposite trades. This file
-implements the correct STOP (breakout) version.
+Watch the flip trap: coding "long at close+atrs" as a limit (buy below) / sell
+above inverts this into mean-reversion, i.e. the opposite trades. This is the
+correct stop (breakout) version.
 
-Fill model (orders placed on bar i's close fill on bar i+1):
+Fill model (orders from bar i's close fill on bar i+1):
   - buy-stop fills at max(stop, open) (gap-through uses the open)
   - sell-stop fills at min(stop, open)
-  - if a bar hits BOTH stops, TradingView's broker emulator assumes the extreme
-    nearer the open is reached first — replicated here via open-proximity.
-Costs: 0.5 tick slippage per side (market taker pays the half-spread) + $fee/side.
+  - if a bar hits both stops, TV's broker emulator assumes the extreme nearer
+    the open is reached first (replicated via open-proximity).
+Costs: 0.5 tick slippage/side (taker pays the half-spread) + $fee/side.
 
 Usage:
   python3 volty_backtest.py candles.csv
@@ -43,7 +41,6 @@ from collections import defaultdict
 from pathlib import Path
 from typing import Dict, List
 
-# This script lives in <root>/research/; candles live in <root>/data/.
 DATA_DIR = Path(__file__).resolve().parent.parent / "data"
 
 
@@ -111,7 +108,7 @@ def run_day(date, rows, cfg):
     fee = cfg["fee"]; pv = cfg["point_value"]
     invert = cfg["invert"]
 
-    # true range and atrs = SMA(TR, length) * numATRs
+    # atrs = SMA(TR, length) * numATRs
     tr = [0.0] * n
     for i in range(n):
         tr[i] = h[i] - l[i] if i == 0 else max(h[i] - l[i], abs(h[i] - c[i - 1]), abs(l[i] - c[i - 1]))
@@ -131,14 +128,14 @@ def run_day(date, rows, cfg):
 
     def open_pos(side, i, px_raw):
         nonlocal pos, entry_px, entry_i
-        # apply slippage: buys fill higher, sells lower
+        # slippage: buys fill higher, sells lower
         entry_px = px_raw + slip if side > 0 else px_raw - slip
         pos = side
         entry_i = i
 
     def close_pos(i, px_raw):
         nonlocal pos
-        exit_px = px_raw - slip if pos > 0 else px_raw + slip   # closing long=sell, short=buy
+        exit_px = px_raw - slip if pos > 0 else px_raw + slip   # close long=sell, short=buy
         gross = (exit_px - entry_px) if pos > 0 else (entry_px - exit_px)
         net = gross * pv - 2 * fee
         trades.append({"date": date, "side": "LONG" if pos > 0 else "SHORT",
@@ -152,7 +149,7 @@ def run_day(date, rows, cfg):
             continue
         bs = c[i] + atrs[i]                         # buy-stop (above)
         ss = c[i] - atrs[i]                         # sell-stop (below)
-        if invert:                                 # mean-reversion variant (limit-like): swap roles
+        if invert:                                 # mean-reversion variant: swap roles
             bs, ss = ss, bs
 
         long_dir, short_dir = (1, -1)
@@ -161,7 +158,7 @@ def run_day(date, rows, cfg):
             long_hit = h[j] >= bs
             short_hit = l[j] <= ss
             if long_hit and short_hit:
-                # whichever extreme is nearer the open is assumed first
+                # extreme nearer the open is assumed to hit first
                 first_long = (h[j] - o[j]) <= (o[j] - l[j])
                 if first_long:
                     open_pos(long_dir, j, o[j] if o[j] >= bs else bs)
@@ -173,7 +170,7 @@ def run_day(date, rows, cfg):
             elif short_hit:
                 open_pos(short_dir, j, o[j] if o[j] <= ss else ss); diag["entry"] += 1
         elif pos > 0:
-            # long: reverse short if sell-stop breaks
+            # long: reverse to short if the sell-stop breaks
             if l[j] <= ss:
                 px = o[j] if o[j] <= ss else ss
                 close_pos(j, px)

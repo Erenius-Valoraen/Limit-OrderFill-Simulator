@@ -41,7 +41,7 @@
     line-height: 1.4;
   }
 
-  /* ── LAYOUT (backtest: extra row at top for the play bar) ── */
+  /* layout, extra top row for the play bar */
   #app {
     display: grid;
     grid-template-rows: auto 44px 1fr 300px 52px 180px;
@@ -49,7 +49,7 @@
     width: 100vw;
   }
 
-  /* ── BACKTEST PLAY BAR ── */
+  /* play bar */
   #backtest-bar {
     display: flex; align-items: center; gap: 14px;
     padding: 8px 16px; background: var(--bg3);
@@ -98,7 +98,7 @@
   }
   #bt-fidelity-note.show { display: inline-block; }
 
-  /* ── HEADER ── */
+  /* header */
   #header {
     display: flex;
     align-items: center;
@@ -140,7 +140,7 @@
   }
   #sym-input:focus { border-color: var(--accent); }
 
-  /* ── MAIN ROW ── */
+  /* main row */
   #main-row {
     display: grid;
     grid-template-columns: 380px 1fr 260px;
@@ -149,7 +149,7 @@
     min-height: 0;
   }
 
-  /* ── ORDER BOOK ── */
+  /* order book */
   #book-panel {
     display: flex;
     flex-direction: column;
@@ -231,7 +231,7 @@
   }
   .book-row:hover { filter: brightness(1.25); }
 
-  /* Volume depth bar: pseudo-element behind the row */
+  /* depth bar behind each row */
   .book-row .depth-bar {
     position: absolute; top: 0; height: 100%;
     pointer-events: none; opacity: 0.18;
@@ -251,7 +251,7 @@
   .ask-row.my-order .r-price::after { content: ' ◂'; color: var(--ask); font-size: 9px; }
   .bid-row.my-order .r-price::after { content: ' ▸'; color: var(--bid); font-size: 9px; }
 
-  /* ── TAPE ── */
+  /* tape */
   #tape-panel {
     display: flex;
     flex-direction: column;
@@ -294,7 +294,7 @@
 
   @keyframes fadeIn { from { opacity: 0; transform: translateX(-4px); } to { opacity: 1; transform: none; } }
 
-  /* ── ENTRY BAR ── */
+  /* entry bar */
   #entry-bar {
     display: flex;
     align-items: center;
@@ -371,7 +371,7 @@
   }
   #entry-msg { margin-left: 6px; font-size: 11px; color: var(--text2); min-width: 200px; }
 
-  /* ── BLOTTER ── */
+  /* blotter */
   #blotter-section {
     display: flex; flex-direction: column; overflow: hidden;
     border-bottom: 1px solid var(--border);
@@ -438,7 +438,7 @@
   ::-webkit-scrollbar-track { background: var(--bg1); }
   ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
 
-  /* ── CHART PANEL ── */
+  /* chart panel */
   #chart-section {
     display: flex; flex-direction: column; overflow: hidden;
     border-bottom: 1px solid var(--border); background: var(--bg0);
