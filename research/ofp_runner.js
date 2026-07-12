@@ -39,7 +39,8 @@ const LATENCY = parseFloat(arg('latency', '100'));   // ms market-order latency
 const EXEC = arg('exec', 'market');
 const START = arg('start', null);
 const END = arg('end', null);
-const CACHE = arg('cache', 'ofp_cache');
+// This runner lives in <root>/research/; the OFP cache lives in <root>/data/ofp_cache/.
+const CACHE = arg('cache', path.join(__dirname, '..', 'data', 'ofp_cache'));
 
 // OFP strategy-config overrides (so it can be retuned for NQ without touching the .js)
 const CFG = { qty: NaN, executionMode: EXEC, maxVolBps: 250, volGuardSpreadMultiplier: 8 };

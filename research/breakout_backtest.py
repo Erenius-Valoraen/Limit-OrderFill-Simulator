@@ -39,6 +39,9 @@ from collections import defaultdict
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
+# This script lives in <root>/research/; candles live in <root>/data/.
+DATA_DIR = Path(__file__).resolve().parent.parent / "data"
+
 
 def load_candles(path: Path) -> Dict[str, List[tuple]]:
     """date -> [(time_et, o, h, l, c, v), ...] in chronological order."""
@@ -258,7 +261,7 @@ def report(all_trades: List[Trade], diag_tot: dict, cfg: dict, days: int) -> Non
 
 def main() -> int:
     ap = argparse.ArgumentParser(description="Breakout/trend strategy on 1s NQ candles.")
-    ap.add_argument("file", nargs="?", default="candles.csv", help="candles CSV (default %(default)s)")
+    ap.add_argument("file", nargs="?", default=str(DATA_DIR / "candles.csv"), help="candles CSV (default %(default)s)")
     ap.add_argument("--lookback", type=int, default=12, help="breakout range candles (default 12)")
     ap.add_argument("--exit-lookback", type=int, default=8, dest="exit_lookback",
                     help="Donchian trailing-exit candles (default 8)")

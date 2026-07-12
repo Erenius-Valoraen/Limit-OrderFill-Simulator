@@ -20,7 +20,8 @@ import json
 import struct
 from pathlib import Path
 
-CACHE = Path("ofp_cache")
+# This script lives in <root>/research/; the OFP cache lives in <root>/data/ofp_cache/.
+CACHE = Path(__file__).resolve().parent.parent / "data" / "ofp_cache"
 meta = json.load((CACHE / "meta.json").open(encoding="utf-8"))
 
 try:

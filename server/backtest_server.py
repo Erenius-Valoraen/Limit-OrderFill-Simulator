@@ -65,10 +65,11 @@ except ImportError:                            # Python < 3.9 fallback
 # so the server works regardless of the current working directory.
 REPO_ROOT = Path(__file__).resolve().parent.parent
 WEB_DIR = REPO_ROOT / "web"
+DATA_DIR = REPO_ROOT / "data"
 
 HOST = "127.0.0.1"
 PORT = 8080
-DEFAULT_FILE = "bfs_l2_export.jsonl"
+DEFAULT_FILE = str(DATA_DIR / "bfs_l2_export.jsonl")
 # Group depth events whose original ts is within this many ms of the previous
 # emitted event into one Binance depthUpdate message. Reduces WS frame count
 # without losing fidelity (frontend just sees a few price levels per message,

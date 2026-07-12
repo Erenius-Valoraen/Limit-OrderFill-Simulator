@@ -43,6 +43,9 @@ from collections import defaultdict
 from pathlib import Path
 from typing import Dict, List
 
+# This script lives in <root>/research/; candles live in <root>/data/.
+DATA_DIR = Path(__file__).resolve().parent.parent / "data"
+
 
 def load_candles(path: Path) -> Dict[str, List[tuple]]:
     days: Dict[str, List[tuple]] = defaultdict(list)
@@ -235,7 +238,7 @@ def report(all_trades, diag_tot, cfg, days):
 
 def main():
     ap = argparse.ArgumentParser(description="Volty Expan Close (TV built-in) on 1s NQ candles.")
-    ap.add_argument("file", nargs="?", default="candles.csv")
+    ap.add_argument("file", nargs="?", default=str(DATA_DIR / "candles.csv"))
     ap.add_argument("--length", type=int, default=5)
     ap.add_argument("--num-atrs", type=float, default=0.75, dest="num_atrs")
     ap.add_argument("--invert", action="store_true",

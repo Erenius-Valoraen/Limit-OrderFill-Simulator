@@ -13,8 +13,8 @@ from collections import defaultdict
 from pathlib import Path
 
 # This tool lives in <root>/tools/; paper-trading fills are written to
-# <root>/paper_data/ by server/paper_trader.py.
-DATA_DIR = Path(__file__).resolve().parent.parent / "paper_data"
+# <root>/data/paper_data/ by server/paper_trader.py.
+DATA_DIR = Path(__file__).resolve().parent.parent / "data" / "paper_data"
 
 
 def load_day(day: str):

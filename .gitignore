@@ -17,7 +17,7 @@ paper_data/
 bfs_l2_export.jsonl
 *.log
 
-# Exported trade dumps in the project root
+# Exported trade dumps (now under data/exports/; patterns match at any depth)
 bfs_trades_*.json
 bfs_trades_*.csv
 trades_*.jsonl

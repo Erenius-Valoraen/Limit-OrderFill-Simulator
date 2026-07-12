@@ -30,6 +30,9 @@ from pathlib import Path
 
 import numpy as np
 
+# This script lives in <root>/research/; the OFP cache lives in <root>/data/ofp_cache/.
+DATA_DIR = Path(__file__).resolve().parent.parent / "data"
+
 DT = np.dtype([('tag', 'u1'), ('pad', 'u1'), ('qty', '<u2'), ('ts', '<u4'), ('px', '<u4')])
 QEPS = 1e-9
 CANCEL_BIAS = 1.35
@@ -262,7 +265,7 @@ def run_day(date, bin_path, cfg):
 
 def main():
     ap = argparse.ArgumentParser(description="Passive MM sim with queue dynamics on NQ.")
-    ap.add_argument("--cache", default="ofp_cache")
+    ap.add_argument("--cache", default=str(DATA_DIR / "ofp_cache"))
     ap.add_argument("--qty", type=float, default=1.0)
     ap.add_argument("--max-inv", type=float, default=5.0, dest="max_inv")
     ap.add_argument("--maker-fee", type=float, default=1.25, dest="maker_fee")

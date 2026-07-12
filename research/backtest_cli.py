@@ -69,6 +69,9 @@ try:
 except ImportError:
     _HAVE_TQDM = False
 
+# This script lives in <root>/research/; shared data lives in <root>/data/.
+DATA_DIR = Path(__file__).resolve().parent.parent / "data"
+
 # RTH (US equity index regular trading hours): 9:30am – 4:00pm ET, Mon–Fri.
 RTH_START_MIN = 9 * 60 + 30
 RTH_END_MIN = 16 * 60
@@ -873,7 +876,7 @@ def report(bt: Backtester, first_ts: Optional[int], last_ts: Optional[int],
 
 def main() -> int:
     ap = argparse.ArgumentParser(description="Headless OrderFlowPredictor NQ backtester (market orders, CME fees).")
-    ap.add_argument("file", nargs="?", default="bfs_l2_export.jsonl",
+    ap.add_argument("file", nargs="?", default=str(DATA_DIR / "bfs_l2_export.jsonl"),
                     help="NT BfsL2Exporter JSONL (default: %(default)s)")
     ap.add_argument("--qty", type=float, default=1.0, help="contracts per entry (default 1)")
     ap.add_argument("--latency", type=float, default=100.0, help="market-order latency ms (default 100)")

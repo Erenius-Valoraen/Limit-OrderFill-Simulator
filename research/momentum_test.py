@@ -62,7 +62,8 @@ def resample_closes(rows, H):
 
 
 def main():
-    path = Path(sys.argv[1] if len(sys.argv) > 1 else "candles.csv")
+    _data_dir = Path(__file__).resolve().parent.parent / "data"
+    path = Path(sys.argv[1] if len(sys.argv) > 1 else str(_data_dir / "candles.csv"))
     days = load(path)
     horizons = [1, 5, 15, 30, 60, 120, 300]   # seconds
 

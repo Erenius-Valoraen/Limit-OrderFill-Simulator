@@ -30,6 +30,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, Optional
 
+# This tool lives in <root>/tools/; shared data lives in <root>/data/.
+DATA_DIR = Path(__file__).resolve().parent.parent / "data"
+
 try:
     from zoneinfo import ZoneInfo
     ET = ZoneInfo("America/New_York")
@@ -134,8 +137,8 @@ def build_day(f, off: int, end_ms: int, tick: float) -> tuple:
 
 def main() -> int:
     ap = argparse.ArgumentParser(description="Build compact OFP event cache from NT JSONL.")
-    ap.add_argument("file", nargs="?", default="bfs_l2_export.jsonl")
-    ap.add_argument("--outdir", default="ofp_cache")
+    ap.add_argument("file", nargs="?", default=str(DATA_DIR / "bfs_l2_export.jsonl"))
+    ap.add_argument("--outdir", default=str(DATA_DIR / "ofp_cache"))
     ap.add_argument("--start", default=None)
     ap.add_argument("--end", default=None)
     args = ap.parse_args()

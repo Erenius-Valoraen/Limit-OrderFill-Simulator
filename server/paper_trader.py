@@ -92,9 +92,9 @@ HISTORY_MAX = 120
 MAX_POSITION = max(0.006, QTY * 6)
 ALLOW_PYRAMIDING = False
 
-# This file lives in <root>/server/; runtime output goes to <root>/paper_data/.
+# This file lives in <root>/server/; runtime output goes to <root>/data/paper_data/.
 REPO_ROOT = Path(__file__).resolve().parent.parent
-DATA_DIR = REPO_ROOT / "paper_data"
+DATA_DIR = REPO_ROOT / "data" / "paper_data"
 DATA_DIR.mkdir(exist_ok=True)
 LOG_PATH = DATA_DIR / "runner.log"
 SESSION_PATH = DATA_DIR / "session_state.json"

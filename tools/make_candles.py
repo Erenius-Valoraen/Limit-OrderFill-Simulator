@@ -25,6 +25,9 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Dict, List, Optional
 
+# This tool lives in <root>/tools/; shared data lives in <root>/data/.
+DATA_DIR = Path(__file__).resolve().parent.parent / "data"
+
 try:
     from zoneinfo import ZoneInfo
     ET = ZoneInfo("America/New_York")
@@ -120,9 +123,9 @@ def build_day(f, off: int, end_ms: int, offset_sec: int) -> List[list]:
 
 def main() -> int:
     ap = argparse.ArgumentParser(description="Build 1s RTH candles -> candles.js")
-    ap.add_argument("file", nargs="?", default="bfs_l2_export.jsonl")
-    ap.add_argument("--out", default="candles.js", help="JS data file for the viewer")
-    ap.add_argument("--csv", default="candles.csv", help="CSV output (set '' to skip)")
+    ap.add_argument("file", nargs="?", default=str(DATA_DIR / "bfs_l2_export.jsonl"))
+    ap.add_argument("--out", default=str(DATA_DIR / "candles.js"), help="JS data file for the viewer")
+    ap.add_argument("--csv", default=str(DATA_DIR / "candles.csv"), help="CSV output (set '' to skip)")
     ap.add_argument("--start", default=None, help="first RTH date YYYY-MM-DD (inclusive)")
     ap.add_argument("--end", default=None, help="last RTH date YYYY-MM-DD (inclusive)")
     args = ap.parse_args()
