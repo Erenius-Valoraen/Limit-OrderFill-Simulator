@@ -60,6 +60,12 @@ except ImportError:                            # Python < 3.9 fallback
     ET = timezone.utc
 
 # ── Config ─────────────────────────────────────────────────────────────────
+# Repo layout after the refactor: this file lives in <root>/server/, the browser
+# assets it serves live in <root>/web/. Resolve those directories from __file__
+# so the server works regardless of the current working directory.
+REPO_ROOT = Path(__file__).resolve().parent.parent
+WEB_DIR = REPO_ROOT / "web"
+
 HOST = "127.0.0.1"
 PORT = 8080
 DEFAULT_FILE = "bfs_l2_export.jsonl"
@@ -710,19 +716,19 @@ async def replay_task(state: ReplayState) -> None:
 
 # ── HTTP / WebSocket handlers ──────────────────────────────────────────────
 async def http_index(_req: web.Request) -> web.Response:
-    p = Path(__file__).parent / "backtest.html"
+    p = WEB_DIR / "backtest.html"
     if not p.exists():
-        return web.Response(text="backtest.html not found alongside backtest_server.py",
+        return web.Response(text="backtest.html not found under web/",
                              status=404)
     return web.FileResponse(p)
 
 
 async def http_strategy_file(req: web.Request) -> web.Response:
-    """Serve the OFP / MRV / AutoMM JS files from the project root."""
+    """Serve the OFP / MRV / AutoMM JS files from web/strategies/."""
     name = req.match_info["name"]
     if not name.endswith(".js") or "/" in name or ".." in name:
         return web.Response(status=400, text="bad filename")
-    p = Path(__file__).parent / name
+    p = WEB_DIR / "strategies" / name
     if not p.exists():
         return web.Response(status=404, text=f"no such strategy file: {name}")
     return web.FileResponse(p, headers={"Cache-Control": "no-cache"})
@@ -868,7 +874,10 @@ def build_app() -> web.Application:
     app = web.Application()
     app.router.add_get("/", http_index)
     app.router.add_get("/backtest.html", http_index)
-    # Strategy JS files (OFP / MRV / AutoMM) served from project root
+    # Strategy JS files (OFP / MRV / AutoMM) served from web/strategies/.
+    # backtest.html references them as "strategies/<name>.js"; the bare
+    # "/<name>.js" route is kept for backward compatibility.
+    app.router.add_get("/strategies/{name:[\\w_]+\\.js}", http_strategy_file)
     app.router.add_get("/{name:[\\w_]+\\.js}", http_strategy_file)
     # Binance-compat snapshot endpoints
     app.router.add_get("/api/v3/depth", http_snapshot)
