@@ -875,6 +875,9 @@ def build_app() -> web.Application:
     app = web.Application()
     app.router.add_get("/", http_index)
     app.router.add_get("/backtest.html", http_index)
+    # Extracted front-end assets (backtest.html loads css/backtest.css + js/backtest.js).
+    app.router.add_static("/css/", WEB_DIR / "css")
+    app.router.add_static("/js/", WEB_DIR / "js")
     # Strategy JS files (OFP / MRV / AutoMM) served from web/strategies/.
     # backtest.html references them as "strategies/<name>.js"; the bare
     # "/<name>.js" route is kept for backward compatibility.
