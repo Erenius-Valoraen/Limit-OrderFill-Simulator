@@ -62,7 +62,10 @@ const INVERT = process.argv.includes('--invert');
 const meta = JSON.parse(fs.readFileSync(path.join(CACHE, 'meta.json'), 'utf8'));
 const TICK = meta.tick || 0.25;
 const SYMBOL = meta.symbol || 'NQ';
-const OFP_SRC = fs.readFileSync(path.join(__dirname, 'orderflow_predictor_strategy.js'), 'utf8');
+// This runner lives in <root>/research/; the strategy source lives in
+// <root>/web/strategies/. Load the exact same file the browser loads.
+const OFP_SRC = fs.readFileSync(
+  path.join(__dirname, '..', 'web', 'strategies', 'orderflow_predictor_strategy.js'), 'utf8');
 const QEPS = 1e-10;
 
 // ---- one engine + strategy instance per day (fresh state) ----
