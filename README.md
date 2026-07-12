@@ -151,15 +151,15 @@ The book is kept correct via the standard Binance snapshot+diff protocol, with t
 
 ### Components
 
-- **`terminal.html`** — single-file, zero-dependency browser terminal: live order book + trade tape, manual order entry, and the queue-aware fill engine described above.
-- **JavaScript strategies**, each grounded in market-microstructure research:
+- **`web/terminal.html`** — browser terminal: live order book + trade tape, manual order entry, and the queue-aware fill engine described above. The page is thin HTML; its styling lives in `web/css/terminal.css` and its logic in ordered modules under `web/js/terminal/` (`01-core` → `02-engine` → `03-ui` → `04-main`).
+- **JavaScript strategies** (`web/strategies/`), each grounded in market-microstructure research:
   - `orderflow_predictor_strategy.js` — short-horizon **order-flow imbalance (OFI)** at and beyond top-of-book (Cont–Kukanov–Stoikov; multi-level OFI).
   - `mean_reversion_strategy.js` — passive limit-order fading of dislocations from an adaptive EWMA fair value; inventory-aware (Avellaneda–Stoikov), treats one-sided flow as adverse-selection risk.
   - `auto_market_maker.js` — Avellaneda–Stoikov-inspired market maker with inventory limits and reservation-price quoting.
-- **`paper_trader.py`** — async headless service mirroring the browser engine; runs a strategy, paper-fills against live top-of-book VWAP, and writes every fill to disk immediately (day-keyed JSONL + CSV) with session-state snapshots for crash-safe restart. Supports live or replay data sources.
-- **`backtest_server.py`** — replays historical L2 JSONL as Binance-shaped WS+REST feeds so the **same strategy code** runs unchanged on history, with explicit lookahead-bias guarantees (events emitted only at their scheduled wall-clock time; snapshots reflect only already-replayed events; fills only consume post-placement events).
-- **`BfsL2Exporter.cs`** — NinjaScript indicator that streams real CME futures L2 depth + trades to JSONL, feeding the replay server (see `NT_REPLAY_SETUP.md`).
-- **`analyze_trades.py`** / **`validate_export.py`** / **`trade_analysis.html`** / **`backtest.html`** — P&L summarisation, export validation, and browser-based analysis.
+- **`server/paper_trader.py`** — async headless service mirroring the browser engine; runs a strategy, paper-fills against live top-of-book VWAP, and writes every fill to disk immediately (day-keyed JSONL + CSV) with session-state snapshots for crash-safe restart. Supports live or replay data sources. Its monitor dashboard page is the template `server/templates/paper_dashboard.html`.
+- **`server/backtest_server.py`** — replays historical L2 JSONL as Binance-shaped WS+REST feeds so the **same strategy code** runs unchanged on history, with explicit lookahead-bias guarantees (events emitted only at their scheduled wall-clock time; snapshots reflect only already-replayed events; fills only consume post-placement events). Serves `web/backtest.html`.
+- **`ninjatrader/BfsL2Exporter.cs`** — NinjaScript indicator that streams real CME futures L2 depth + trades to JSONL, feeding the replay server (see `docs/NT_REPLAY_SETUP.md`).
+- **`tools/analyze_trades.py`** / **`tools/validate_export.py`** / **`web/trade_analysis.html`** / **`web/backtest.html`** — P&L summarisation, export validation, and browser-based analysis.
 
 ## Tech stack
 
@@ -167,7 +167,30 @@ The book is kept correct via the standard Binance snapshot+diff protocol, with t
 - **Python** (asyncio, websockets, aiohttp) — headless trader, replay server
 - **C#** (NinjaScript) — NinjaTrader L2 exporter
 - **Binance Futures WebSocket + REST** — live market data
-- **HTML/CSS** — single-file terminal and dashboards
+- **HTML/CSS** — browser terminal and dashboards (thin HTML + external CSS/JS modules under `web/`)
+
+## Repository layout
+
+```
+web/          Browser front-ends. terminal.html (live) and backtest.html (replay),
+              plus css/, js/<page>/ modules, strategies/ (the 3 algos both pages
+              load) and vendor/ (charting lib).
+server/       Long-running Python services: paper_trader.py (live paper trading +
+              monitor dashboard) and backtest_server.py (the replay dashboard on
+              :8080). templates/ holds the paper-trader dashboard page.
+research/     One-off backtests and experiments (backtest_cli, mm_sim, volty /
+              breakout / momentum, eta_estimate, ofp_runner.js).
+tools/        Data pipeline & utilities (make_candles, build_ofp_cache,
+              validate_export, analyze_trades).
+ninjatrader/  C# NinjaScript files that run inside NinjaTrader (data export +
+              strategies) — a separate runtime with no ties to the Python/JS.
+data/         All data and generated output — the L2 export, candles, caches,
+              paper-trading fills, exports. Mostly gitignored.
+docs/         HANDOFF.md and the NinjaTrader replay setup guide.
+```
+
+Scripts resolve `data/` from the repository root, so they can be launched from
+anywhere; every path is still overridable via CLI flags.
 
 ## Getting started
 
@@ -177,16 +200,17 @@ pip install -r requirements.txt
 
 ```bash
 # Browser terminal — no setup, public data only:
-open terminal.html
+open web/terminal.html
 
-# Headless paper trader (fills → paper_data/):
-python paper_trader.py
+# Headless paper trader (fills → data/paper_data/, dashboard on :1000/:8000):
+python server/paper_trader.py
 
-# Backtest replay:
-python backtest_server.py /path/to/replay.jsonl   # then open http://localhost:8080/
+# Backtest replay dashboard (defaults to data/bfs_l2_export.jsonl):
+python server/backtest_server.py            # then open http://localhost:8080/
+python server/backtest_server.py /path/to/replay.jsonl   # or a specific file
 
 # Analyse a day's fills:
-python analyze_trades.py 2026-06-14
+python tools/analyze_trades.py 2026-06-14
 ```
 
 ## Known limitations (read before trusting any P&L)
