@@ -1,6 +1,6 @@
 <div align="center">
 
-# Binance Fill Simulator
+# Limit Fill Simulator
 
 **Would my limit order have filled?** A queue-aware fill simulator for live Binance order books.
 
@@ -10,9 +10,6 @@ Exchanges tell you the total size at each price, never where your order sits in 
 
 > Paper trading only. Every fill is simulated. It never touches a real exchange, it isn't financial advice, and the strategies are experiments, not a system that makes money. Read the P&L as a research signal.
 
-<!-- DEMO: drop media into docs/media/ and swap the placeholders below.
-     For a real video, drag the file into a GitHub PR/issue comment and paste the
-     user-attachments URL here, or just link out to YouTube/Loom. -->
 
 ## Demo
 
@@ -27,7 +24,7 @@ Exchanges tell you the total size at each price, never where your order sits in 
 |:---:|:---:|:---:|
 | <img src="docs/media/terminal.png" width="260" alt="Live terminal"> | <img src="docs/media/backtest.png" width="260" alt="Backtest replay"> | <img src="docs/media/paper.png" width="260" alt="Paper trader"> |
 
-## Why it's hard
+## Why this exists
 
 A market order is trivial to simulate: walk the book, take liquidity, tally the price. A limit order isn't, because whether you fill depends on your place in the queue at your price, and no exchange publishes that.
 
