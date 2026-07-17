@@ -13,13 +13,14 @@ Exchanges tell you the total size at each price, never where your order sits in 
 
 ## Demo
 
-> **▶ 60-second demo:** VIDEO_URL &nbsp;•&nbsp; **Live paper trader:** `python server/paper_trader.py`, then http://localhost:1000/
+The paper trader running against live Binance BTC: order book, trade tape, and the
+strategy taking fills in real time.
 
-<!-- To make the video play inline: drag docs/media/demo.mp4 into a GitHub issue or
-     PR comment, then paste the user-attachments URL it returns on the line below
-     (and into VIDEO_URL above). A plain repo path will not render as a player. -->
+<p align="center">
+  <img src="docs/media/demo.gif" alt="Live paper trader filling against Binance BTC" width="820">
+</p>
 
-VIDEO_URL
+Run it yourself with `python server/paper_trader.py`, then open http://localhost:1000/.
 
 ## Why this exists
 
