@@ -13,16 +13,13 @@ Exchanges tell you the total size at each price, never where your order sits in 
 
 ## Demo
 
-> **▶ Watch the 60-second demo:** _add link here_ &nbsp;•&nbsp; **Live terminal:** open `web/terminal.html`
+> **▶ 60-second demo:** VIDEO_URL &nbsp;•&nbsp; **Live paper trader:** `python server/paper_trader.py`, then http://localhost:1000/
 
-<p align="center">
-  <img src="docs/media/hero.gif" alt="Live fill simulator in action" width="820"><br>
-  <em>(placeholder — add docs/media/hero.gif)</em>
-</p>
+<!-- To make the video play inline: drag docs/media/demo.mp4 into a GitHub issue or
+     PR comment, then paste the user-attachments URL it returns on the line below
+     (and into VIDEO_URL above). A plain repo path will not render as a player. -->
 
-| Live terminal | Replay + backtest | Paper-trader dashboard |
-|:---:|:---:|:---:|
-| <img src="docs/media/terminal.png" width="260" alt="Live terminal"> | <img src="docs/media/backtest.png" width="260" alt="Backtest replay"> | <img src="docs/media/paper.png" width="260" alt="Paper trader"> |
+VIDEO_URL
 
 ## Why this exists
 

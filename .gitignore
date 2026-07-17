@@ -62,3 +62,5 @@ obj/
 .DS_Store
 Thumbs.db
 desktop.ini
+# demo video: too big for git, upload via a GitHub attachment and link it instead
+docs/media/*.mp4

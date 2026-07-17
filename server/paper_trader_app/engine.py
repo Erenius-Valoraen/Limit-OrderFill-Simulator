@@ -84,7 +84,7 @@ RUNTIME_CONFIG_PATH = DATA_DIR / "runtime_config.json"
 
 STATUS_INTERVAL_S = 30           # console status print cadence
 HTTP_PORT_PRIMARY = 1000         # user-requested port (privileged on macOS)
-HTTP_PORT_FALLBACK = 8000        # used if 1000 is not bindable without root
+HTTP_PORT_FALLBACK = 8010        # used if 1000 is not bindable without root
 
 # state
 bids: dict[float, float] = {}
