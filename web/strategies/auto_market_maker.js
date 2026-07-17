@@ -1,22 +1,18 @@
 /*
-  AutoMM: Avellaneda-Stoikov-inspired market maker for terminal.html.
+  AutoMM: Avellaneda-Stoikov style market maker for terminal.html.
 
-  Usage:
-    1. Load this file after terminal.html's main script, or paste it into DevTools.
-    2. Start with:
-         AutoMM.start({ qty: 0.001, maxInventory: 0.01 })
-    3. Stop and cancel strategy-owned orders with:
-         AutoMM.stop()
+  Load after terminal.html's main script (or paste into DevTools), then:
+    AutoMM.start({ qty: 0.001, maxInventory: 0.01 })
+    AutoMM.stop()   // stops and cancels our orders
 
-  The strategy is research-backed, not guaranteed profitable. It is designed for
-  simulated execution and should not be connected to a real exchange without
-  exchange adapters, risk checks, fees, latency modelling, and live kill-switches.
+  Built for the simulator. Don't point this at a real exchange without adapters,
+  risk checks, fees, latency modelling and a live kill-switch.
 */
 (function attachAutoMM(global) {
   'use strict';
 
   const DEFAULTS = {
-    qty: null,                 // null = read #qty-input, fallback to fallbackQty.
+    qty: null,                 // null = read #qty-input, else fallbackQty
     fallbackQty: 0.001,
     maxInventory: 0.01,
     maxInventoryMultiplier: 10,

@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 """
-momentum_test.py — Directly test the hypothesis "NQ trends, so trade in the
-direction of the recent move." No strategy code involved — just the price data.
+momentum_test.py: tests "NQ trends, so trade in the direction of the recent
+move" straight from the price data, no strategy code.
 
 For each horizon H, sample RTH closes every H seconds, and for each bar trade in
-the SIGN of the previous H-second move, capturing the next H-second move:
+the sign of the previous H-second move, capturing the next H-second move:
     pnl_gross(i) = sign(close[i]-close[i-1]) * (close[i+1]-close[i])
-Reports the GROSS edge (is momentum continuation even present?) and the NET edge
-after a realistic market-order round-trip cost. Resets per day.
+Reports the gross edge (is momentum continuation even there?) and the net edge
+after a market-order round-trip cost. Resets per day.
 
 Reads candles.csv (1s RTH candles from make_candles.py).
 """
@@ -17,7 +17,7 @@ from pathlib import Path
 
 TICK = 0.25
 MULT = 20.0
-# market-order round trip: 1 tick spread ($5) + 2x $1.25 fees = $7.50
+# market round trip: 1 tick spread ($5) + 2x $1.25 fees = $7.50
 COST_USD = 1 * TICK * MULT + 2 * 1.25
 
 
@@ -62,7 +62,8 @@ def resample_closes(rows, H):
 
 
 def main():
-    path = Path(sys.argv[1] if len(sys.argv) > 1 else "candles.csv")
+    _data_dir = Path(__file__).resolve().parent.parent / "data"
+    path = Path(sys.argv[1] if len(sys.argv) > 1 else str(_data_dir / "candles.csv"))
     days = load(path)
     horizons = [1, 5, 15, 30, 60, 120, 300]   # seconds
 
@@ -74,7 +75,7 @@ def main():
 
     for H in horizons:
         gross_pts = []
-        # for autocorr
+        # kept for the lag-1 autocorr below
         m_prev_all = []
         m_next_all = []
         for d in sorted(days):
@@ -87,7 +88,7 @@ def main():
                 mn = moves[i]          # next move (what we capture)
                 if mp == 0:
                     continue
-                g = (1 if mp > 0 else -1) * mn   # trade in direction of prior move
+                g = (1 if mp > 0 else -1) * mn   # trade with the prior move
                 gross_pts.append(g)
                 m_prev_all.append(mp)
                 m_next_all.append(mn)
@@ -96,7 +97,7 @@ def main():
             continue
         mean_g = sum(gross_pts) / n
         wins = sum(1 for g in gross_pts if g > 0)
-        # lag-1 autocorrelation of H-period moves
+        # lag-1 autocorr of H-period moves
         mean_p = sum(m_prev_all) / n
         mean_n = sum(m_next_all) / n
         cov = sum((m_prev_all[i] - mean_p) * (m_next_all[i] - mean_n) for i in range(n)) / n

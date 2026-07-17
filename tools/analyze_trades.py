@@ -12,7 +12,8 @@ import sys
 from collections import defaultdict
 from pathlib import Path
 
-DATA_DIR = Path(__file__).parent / "paper_data"
+# data/paper_data/ dir (written by server/paper_trader.py), relative to repo root
+DATA_DIR = Path(__file__).resolve().parent.parent / "data" / "paper_data"
 
 
 def load_day(day: str):
@@ -40,8 +41,8 @@ def list_days():
 
 
 def replay_pnl(fills):
-    """Replay the fills through the simulator's position accounting to derive
-    realized PnL, total fees, win/loss counts, etc. — symbol by symbol."""
+    """Replay fills through the position accounting to derive realized PnL,
+    fees, win/loss counts, etc., per symbol."""
     by_sym = defaultdict(lambda: {
         "netQty": 0.0, "avgEntry": 0.0, "realizedPnl": 0.0, "fees": 0.0,
         "closes": 0, "wins": 0, "losses": 0, "winPnl": 0.0, "lossPnl": 0.0,

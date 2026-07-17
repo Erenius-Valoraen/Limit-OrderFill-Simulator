@@ -1,40 +1,25 @@
 #!/usr/bin/env python3
 """
-backtest_cli.py — Headless terminal backtester for OrderFlowPredictor on NQ.
+backtest_cli.py: headless backtester for OrderFlowPredictor on NQ.
 
-Replays a NinjaTrader BfsL2Exporter JSONL (the same file backtest_server.py
-serves) and runs the *exact* OrderFlowPredictor strategy logic against it, in
-MARKET-ORDER mode, with CME-futures ($/contract) fees. Prints a comprehensive
-performance report.
+Replays a NinjaTrader BfsL2Exporter JSONL and runs the OrderFlowPredictor
+strategy logic against it in market-order mode with CME ($/contract) fees.
 
-Fidelity
---------
-This is a 1:1 Python port of:
-  - orderflow_predictor_strategy.js  (signal, OFI, trade pressure, vol guard,
-    maybeExit, cooldown/hold/TTL gating, position-cap + no-pyramiding logic)
-  - terminal.html / backtest.html fill engine for MARKET orders:
-      placeMarketOrder -> after latencyMs, marketFillPrice() walks up to 20
-      levels of the opposite side and fills at the VWAP; updatePosition()
-      does the avg-entry / realized-PnL bookkeeping.
-  - The production runtime overrides the HTML passes to .start():
-      { maxVolBps: 250, volGuardSpreadMultiplier: 8, executionMode: 'market' }
+Python port of orderflow_predictor_strategy.js (signal/OFI/trade pressure/vol
+guard/maybeExit/gating) plus the terminal.html market-order fill engine
+(placeMarketOrder waits latencyMs then VWAPs up to 20 levels of the opposite
+side; updatePosition does the avg-entry / realized-PnL bookkeeping). Production
+overrides passed to .start(): maxVolBps 250, volGuardSpreadMultiplier 8, market.
 
-Clock
------
-The live strategy keys everything off Date.now(). A backtest needs a
-deterministic clock, so "now" here is the MARKET timestamp of the event stream
-(ms epoch). Trade-recency, cooldowns, TTLs and entry-age all measure against
-that same market clock, so they behave exactly as live with zero wall-clock
-skew. Market-order latency is modeled in market time: an order placed at t
-fills against the book as it exists at t + latencyMs.
+The live strategy keys off Date.now(); here "now" is the market timestamp of the
+event stream (ms epoch), so cooldowns/TTLs/entry-age all use market time with no
+wall-clock skew. An order placed at t fills against the book as it exists at
+t + latencyMs.
 
-PnL units
----------
-The HTML tracks realized PnL in raw index points but charges fees in dollars.
-For NQ that under-counts dollar PnL by the contract multiplier ($20/point).
-This tool dollarizes PnL with --point-value (default 20 for E-mini NQ) so net
-PnL and fees share units. This does not change any strategy decision (the
-strategy reasons in bps), only the reported PnL.
+The HTML tracks realized PnL in index points but charges fees in dollars, which
+under-counts NQ dollar PnL by the $20/point multiplier. We dollarize with
+--point-value so PnL and fees share units. Doesn't affect any decision (the
+strategy reasons in bps), only the reported number.
 
 Usage
 -----
@@ -43,7 +28,7 @@ Usage
   python3 backtest_cli.py bfs_l2_export.jsonl --qty 2 --latency 150 --fee 1.29
   python3 backtest_cli.py bfs_l2_export.jsonl --start 2026-05-07 --end 2026-05-08
 
-Tested on Python 3.9+. Optional dependency: tqdm (for the progress bar).
+Python 3.9+. Optional: tqdm for the progress bar.
 """
 from __future__ import annotations
 
@@ -69,7 +54,9 @@ try:
 except ImportError:
     _HAVE_TQDM = False
 
-# RTH (US equity index regular trading hours): 9:30am – 4:00pm ET, Mon–Fri.
+DATA_DIR = Path(__file__).resolve().parent.parent / "data"
+
+# RTH: 9:30-16:00 ET, Mon-Fri
 RTH_START_MIN = 9 * 60 + 30
 RTH_END_MIN = 16 * 60
 
@@ -94,7 +81,7 @@ def derive_price_dec(tick_size: float) -> int:
     return len(s.split(".", 1)[1]) if "." in s else 0
 
 
-# ── Fast field extraction (avoid full json.loads on skipped non-RTH lines) ───
+# fast field extraction (avoid json.loads on lines we're going to skip)
 _WS = b" \t"
 
 
@@ -132,7 +119,7 @@ def _fast_type(raw: bytes) -> Optional[bytes]:
     return raw[j:j + 1] if j < n else None
 
 
-# ── Strategy config — DEFAULTS from the .js, with production .start() overrides ──
+# strategy config: .js defaults + production .start() overrides
 def make_config(qty: float) -> dict:
     return {
         "qty": qty,
@@ -171,58 +158,55 @@ class Backtester:
         self.fee = fee_per_contract
         self.mult = point_value
         self.symbol = symbol
-        self.tick_sz = tick                   # instrument tick size (0.25 for NQ)
+        self.tick_sz = tick                   # 0.25 for NQ
         self.max_slip_ticks = max_slip_ticks  # protection band on market fills
         self.sl_ticks = sl_ticks              # tick-based hard stop (0 = off)
         self.tp_ticks = tp_ticks              # tick-based take profit (0 = off)
 
-        # Market state
-        self.now = 0                       # current market clock (ms)
+        self.now = 0                       # market clock (ms)
         self.bids: Dict[float, float] = {}
         self.asks: Dict[float, float] = {}
         self.last_price: Optional[float] = None
 
-        # Strategy-local state (mirror of orderflow_predictor_strategy.js `local`)
+        # strategy-local state (mirrors `local` in the .js)
         self.trades: List[dict] = []
         self.mids: List[dict] = []
         self.last_book: Optional[dict] = None
         self.entry_ts = 0
         self.last_action_ts = 0
 
-        # Position (mirror of state.positions[symbol])
+        # position (mirrors state.positions[symbol])
         self.net_qty = 0.0
         self.avg_entry = 0.0
 
-        # Pending market orders awaiting latency: list of dicts
+        # market orders waiting out their latency
         self.pending: List[dict] = []
         self._oid = 0
 
-        # ── Accounting (kept in separate units, dollarized for reporting) ──
-        self.realized_points = 0.0         # sum of pnl points across all closes
+        # accounting: points and dollars tracked separately, dollarized at report time
+        self.realized_points = 0.0
         self.fees_dollars = 0.0
         self.fills = 0
         self.contracts_traded = 0.0
-        # Per-round-trip cycle accumulators (flat -> flat)
+        # per-round-trip accumulators (flat -> flat)
         self._cyc_points = 0.0
         self._cyc_fees = 0.0
         self._cyc_entry_ts = 0
         self._cyc_open = False
-        self.trades_log: List[dict] = []   # finalized round-trips
-        # Equity curve (cumulative net $ after each finalized round-trip)
+        self.trades_log: List[dict] = []
+        # equity curve
         self.equity = 0.0
         self.equity_peak = 0.0
         self.max_drawdown = 0.0
-        # Tick diagnostics
+        # diagnostics
         self.tick_count = 0
         self.skip_reasons: Dict[str, int] = defaultdict(int)
         self.exit_reasons: Dict[str, int] = defaultdict(int)
         self.entries = 0
-        # Fill realism diagnostics
-        self.slip_dollars = 0.0            # total $ paid to slippage beyond touch
+        self.slip_dollars = 0.0            # $ paid to slippage beyond the touch
         self.band_capped = 0               # fills that hit the protection band
         self.unfilled_qty = 0.0            # qty dropped because book was too thin
 
-    # ── Book helpers (mirror terminal.html) ──────────────────────────────
     def best_bid(self) -> Optional[float]:
         return max(self.bids) if self.bids else None
 
@@ -243,13 +227,11 @@ class Backtester:
     def position_qty(self) -> float:
         return self.net_qty
 
-    # ── Trade tape ───────────────────────────────────────────────────────
     def capture_trade(self, price: float, qty: float, side: str, ts: int) -> None:
         self.trades.append({"price": price, "qty": qty, "side": side, "ts": ts})
         while len(self.trades) > self.cfg["historyMax"]:
             self.trades.pop(0)
 
-    # ── Signal pipeline (1:1 with the .js) ───────────────────────────────
     def book_features(self) -> Optional[dict]:
         bb = self.best_bid()
         ba = self.best_ask()
@@ -348,16 +330,14 @@ class Backtester:
         score = max(-1.0, min(1.0, raw))
         return {"skip": False, "score": score, "side": "BUY" if score > 0 else "SELL", "book": book}
 
-    # ── Order placement / fills (market mode only) ───────────────────────
     def _new_oid(self) -> int:
         self._oid += 1
         return self._oid
 
     def cancel_owned(self) -> None:
-        # Mirrors cancelOwned() in market mode: strategy-owned OPEN orders are
-        # cancelled, so a pending market order whose latency hasn't elapsed is
-        # dropped before it can fill. (With latency < quote interval this is
-        # rarely non-empty, but kept for 1:1 fidelity.)
+        # cancelOwned() in market mode: a pending order still inside its latency
+        # window gets dropped before it can fill. Rarely non-empty when latency <
+        # quote interval, but kept to match the .js.
         self.pending = []
 
     def place_market_order(self, side: str, qty: float) -> None:
@@ -365,10 +345,9 @@ class Backtester:
                              "qty": float(qty), "fill_ts": self.now + self.latency_ms})
 
     def market_fill_price(self, side: str, qty: float) -> Optional[Tuple[float, float, float, bool]]:
-        """Walk the opposite book for a market order, but bound how far it can
-        sweep with a protection band (max_slip_ticks from the touch). This is
-        the realistic 1-lot model: you take the touch, and a thin/gapped book
-        cannot drag a fill arbitrarily deep (mirrors a CME protection band).
+        """Walk the opposite book, bounded by a protection band (max_slip_ticks
+        from the touch) so a thin/gapped book can't drag the fill arbitrarily
+        deep, like a CME protection band.
         Returns (vwap, filled_qty, touch_price, hit_band) or None if no book."""
         levels = self.top_asks(20) if side == "BUY" else self.top_bids(20)
         if not levels:
@@ -384,7 +363,7 @@ class Backtester:
             if remaining <= QUEUE_EPS:
                 break
             if (side == "BUY" and price > worst + 1e-9) or (side == "SELL" and price < worst - 1e-9):
-                hit_band = True       # next level is beyond the band — stop sweeping
+                hit_band = True       # next level is past the band, stop sweeping
                 break
             take = min(remaining, level_qty)
             notional += price * take
@@ -401,7 +380,7 @@ class Backtester:
         if fill is None:
             return
         price, qty, touch, hit_band = fill
-        # Slippage = how far the VWAP landed past the touch (always >= 0).
+        # slippage: how far the VWAP landed past the touch (>= 0)
         slip = (price - touch) if order["side"] == "BUY" else (touch - price)
         if slip > 1e-9:
             self.slip_dollars += slip * qty * self.mult
@@ -411,10 +390,10 @@ class Backtester:
         self.update_position(order["side"], price, qty)
 
     def update_position(self, side: str, fill_price: float, fill_qty: float) -> None:
-        """Mirror of updatePosition() in backtest.html, but PnL is accumulated
-        in points (dollarized at report time) and fees are tracked in $."""
+        """updatePosition() from backtest.html; PnL accumulates in points
+        (dollarized at report time), fees in $."""
         is_buy = side == "BUY"
-        fee = abs(fill_qty) * self.fee                      # $/contract (taker = MARKET)
+        fee = abs(fill_qty) * self.fee                      # taker (market)
         self.fees_dollars += fee
         self.fills += 1
         self.contracts_traded += abs(fill_qty)
@@ -463,7 +442,6 @@ class Backtester:
         self.max_drawdown = max(self.max_drawdown, self.equity_peak - self.equity)
         self._cyc_open = False
 
-    # ── maybeExit (1:1 with the .js) ─────────────────────────────────────
     def maybe_exit(self, book: dict, pos: float, score: float) -> bool:
         if pos == 0:
             return False
@@ -471,11 +449,10 @@ class Backtester:
         avg_entry = self.avg_entry if self.avg_entry else book["mid"]
         pnl_bps = ((book["mid"] - avg_entry) / avg_entry * 10000 if pos > 0
                    else (avg_entry - book["mid"]) / avg_entry * 10000)
-        # NQ adaptation: tick-based TP/SL that actually fire. The .js uses bps
-        # (takeProfitBps=4, stopLossBps=6) which on NQ at ~28k translate to
-        # ~11/17 points and never trigger, so every trade exits on the 4.5s
-        # timeout and adverse moves run unbounded. A hard tick stop caps the
-        # per-trade loss. Set --sl-ticks/--tp-ticks 0 to fall back to bps only.
+        # tick-based TP/SL for NQ. The .js bps (tp=4, sl=6) are ~11/17 points at
+        # ~28k and never fire, so everything exits on the 4.5s timeout and losers
+        # run unbounded. Tick stop caps per-trade loss. --sl-ticks/--tp-ticks 0
+        # falls back to bps only.
         pnl_ticks = ((book["mid"] - avg_entry) if pos > 0 else (avg_entry - book["mid"])) / self.tick_sz
         signal_flipped = ((pos > 0 and score < -self.cfg["exitThreshold"]) or
                           (pos < 0 and score > self.cfg["exitThreshold"]))
@@ -494,7 +471,6 @@ class Backtester:
         self.last_action_ts = self.now
         return True
 
-    # ── tick (1:1 with the .js) ──────────────────────────────────────────
     def tick(self) -> None:
         self.tick_count += 1
         s = self.signal()
@@ -540,11 +516,10 @@ class Backtester:
             self.skip_reasons["position cap"] += 1
             self.cancel_owned()
 
-    # ── time advancement: run due fills + ticks up to `until` (exclusive) ──
     def advance_to(self, until: int, next_tick: int) -> int:
-        """Execute pending market fills and 350ms strategy ticks scheduled
-        strictly before `until`, in time order, against the current (constant
-        between events) book. Returns the updated next_tick."""
+        """Run pending fills and 350ms strategy ticks scheduled strictly before
+        `until`, in time order, against the current (constant between events)
+        book. Returns the updated next_tick."""
         while True:
             # earliest pending fill due before `until`
             fill_due = None
@@ -554,7 +529,7 @@ class Backtester:
             tick_due = next_tick if next_tick < until else None
             if fill_due is None and tick_due is None:
                 return next_tick
-            # whichever comes first in market time
+            # whichever is earlier
             if tick_due is not None and (fill_due is None or tick_due <= fill_due["fill_ts"]):
                 self.now = tick_due
                 self.tick()
@@ -565,7 +540,7 @@ class Backtester:
                 self.execute_pending_fill(fill_due)
 
     def force_flatten(self) -> None:
-        """Close any residual position at the last available price (taker fee)."""
+        """Close any residual position at the last price (taker fee)."""
         if self.net_qty == 0:
             return
         side = "SELL" if self.net_qty > 0 else "BUY"
@@ -579,10 +554,9 @@ class Backtester:
         self.update_position(side, price, qty)
 
     def end_session_reset(self) -> None:
-        """Called at each new RTH day. Flatten any residual position at the
-        last price (you don't hold NQ overnight), then clear book + per-session
-        strategy state so the next session starts fresh (the live strategy is
-        effectively restarted each RTH day)."""
+        """New RTH day: flatten residual (no overnight NQ), then clear book and
+        per-session state so the next session starts fresh (the live strategy is
+        effectively restarted each day)."""
         if self.net_qty != 0 and self.last_price is not None:
             side = "SELL" if self.net_qty > 0 else "BUY"
             self.update_position(side, self.last_price, abs(self.net_qty))
@@ -601,7 +575,7 @@ def run(args) -> int:
         return 1
     file_size = path.stat().st_size
 
-    # Pull instrument/tick from the first meta line (lightweight).
+    # instrument/tick from the first meta line
     instrument, tick_size = "NQ", 0.25
     with path.open("rb") as f:
         head = f.read(4096).lstrip(b"\xef\xbb\xbf")
@@ -623,7 +597,7 @@ def run(args) -> int:
                     tick_size, args.max_slippage_ticks, args.sl_ticks, args.tp_ticks)
 
     rth_only = not args.all_hours
-    # Numeric UTC ms bounds for fast date filtering (avoid a datetime per line).
+    # UTC ms bounds so date filtering doesn't build a datetime per line
     start_ms: Optional[int] = None
     end_ms: Optional[int] = None        # exclusive
     if args.start:
@@ -654,7 +628,7 @@ def run(args) -> int:
     GAP_RESYNC = cfg["quoteEveryMs"] * 8   # collapse dead gaps (overnight, halts)
     warmup_ms = int(args.warmup_min * 60_000)
 
-    # Current ET-day session bounds (recomputed once per ET day; numeric ms).
+    # ET-day session bounds, recomputed once per day (numeric ms)
     cur_day_start = cur_day_end = None
     cur_rs = cur_re = cur_warm = 0
     cur_weekend = False
@@ -700,15 +674,14 @@ def run(args) -> int:
             if end_ms is not None and ts >= end_ms:
                 break
 
-            # Decide whether to MAINTAIN the book and whether to TICK (trade).
-            # In RTH mode we warm the book for `warmup_min` before 9:30 so the
-            # open starts on a fully populated book (no gapped/empty-book fills),
-            # but only let the strategy trade inside 9:30-16:00 ET.
+            # In RTH mode, warm the book for `warmup_min` before 9:30 so the open
+            # starts on a full book (no gapped/empty-book fills), but only let the
+            # strategy trade inside 9:30-16:00 ET.
             if rth_only:
                 if cur_day_end is None or ts >= cur_day_end or ts < cur_day_start:
                     cur_day_start, cur_day_end, cur_rs, cur_re, cur_weekend = session_for(ts)
                     cur_warm = cur_rs - warmup_ms
-                    bt.end_session_reset()      # flatten + clear at each new ET day
+                    bt.end_session_reset()      # flatten + clear at each new day
                     next_tick = None
                 if cur_weekend or ts < cur_warm or ts >= cur_re:
                     continue
@@ -721,8 +694,8 @@ def run(args) -> int:
             except json.JSONDecodeError:
                 continue
 
-            # Strategy clock: run due fills + ticks (against the pre-event book)
-            # only while trading is on. During warmup we just build the book.
+            # run due fills + ticks against the pre-event book, only while trading
+            # is on; during warmup we just build the book
             if tick_on:
                 if first_ts is None:
                     first_ts = ts
@@ -733,7 +706,7 @@ def run(args) -> int:
                 next_tick = bt.advance_to(ts, next_tick)
                 last_ts = ts
 
-            # Apply the event to the book / tape.
+            # apply the event to the book / tape
             if etype == b"d":
                 depth_events += 1
                 side = ev.get("side")
@@ -763,10 +736,9 @@ def run(args) -> int:
         bar.update(bytes_since)
         bar.close()
 
-    # Flush any remaining due fills/ticks, then flatten residual position.
+    # flush remaining fills/ticks, then flatten residual position
     if first_ts is not None and last_ts is not None:
         bt.now = last_ts
-        # drain pending fills
         for p in sorted(bt.pending, key=lambda x: x["fill_ts"]):
             bt.now = max(bt.now, p["fill_ts"])
             bt.execute_pending_fill(p)
@@ -833,7 +805,7 @@ def report(bt: Backtester, first_ts: Optional[int], last_ts: Optional[int],
         line("Expectancy/trade", _fmt_money(net / n))
         line("Max drawdown", _fmt_money(-bt.max_drawdown))
         line("Avg hold time", f"{avg_hold/1000:.1f}s")
-        # Per-trade Sharpe (not annualized) — sanity stat on consistency.
+        # per-trade Sharpe (not annualized), just a consistency check
         nets = [t["net"] for t in trades]
         mean = net / n
         sd = math.sqrt(sum((x - mean) ** 2 for x in nets) / n) if n > 1 else 0
@@ -841,7 +813,7 @@ def report(bt: Backtester, first_ts: Optional[int], last_ts: Optional[int],
     else:
         line("Result", "no round-trip trades taken")
 
-    # Per-day breakdown
+    # per-day breakdown
     if n:
         by_day: Dict[str, dict] = defaultdict(lambda: {"n": 0, "net": 0.0, "fees": 0.0})
         for t in trades:
@@ -855,8 +827,7 @@ def report(bt: Backtester, first_ts: Optional[int], last_ts: Optional[int],
             r = by_day[d]
             print(f"  {d:<14}{r['n']:>8}{_fmt_money(r['net']):>16}{_fmt_money(-r['fees']):>14}")
     print("=" * 58)
-    # Fill realism: how much went to slippage and how often the protection band
-    # bound the fill (the "sweep into a thin book" cases the band now prevents).
+    # fill realism: $ lost to slippage and how often the band bound the fill
     line("Slippage paid (total)", _fmt_money(-bt.slip_dollars))
     if bt.fills:
         line("Avg slippage / fill", _fmt_money(-bt.slip_dollars / bt.fills))
@@ -873,7 +844,7 @@ def report(bt: Backtester, first_ts: Optional[int], last_ts: Optional[int],
 
 def main() -> int:
     ap = argparse.ArgumentParser(description="Headless OrderFlowPredictor NQ backtester (market orders, CME fees).")
-    ap.add_argument("file", nargs="?", default="bfs_l2_export.jsonl",
+    ap.add_argument("file", nargs="?", default=str(DATA_DIR / "bfs_l2_export.jsonl"),
                     help="NT BfsL2Exporter JSONL (default: %(default)s)")
     ap.add_argument("--qty", type=float, default=1.0, help="contracts per entry (default 1)")
     ap.add_argument("--latency", type=float, default=100.0, help="market-order latency ms (default 100)")

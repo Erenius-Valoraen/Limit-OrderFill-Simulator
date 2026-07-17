@@ -1,42 +1,24 @@
 #!/usr/bin/env python3
 """
-backtest_server.py — Replay an NT BfsL2Exporter JSONL as Binance-shape feeds.
+Replay a NinjaTrader BfsL2Exporter JSONL as Binance-shaped feeds, so
+backtest.html runs the exact same strategy code on history as it does live.
 
-Architecture
-------------
-  NT JSONL  ──►  this server  ──►  ws://localhost:PORT/ws/<sym>@depth     ──►  backtest.html
-                                   ws://localhost:PORT/ws/<sym>@aggTrade  ──►  (same strategy code as live)
-                                   GET   /api/v3/depth      (snapshot)
-                                   GET   /fapi/v1/depth     (snapshot)
-                                   POST  /api/control       (play / pause / speed)
-                                   GET   /api/status        (replay position)
+Serves:
+  ws  /ws/<sym>@depth, /ws/<sym>@aggTrade   the replayed feed
+  GET  /api/v3/depth, /fapi/v1/depth        REST snapshot
+  POST /api/control                         play / pause / speed
+  GET  /api/status                          where the replay is
 
-Lookahead-bias-free guarantees
-------------------------------
-  - Events are read from the NT JSONL in file order, which is chronological
-    by `ts` (NT writes them as they come off the historical feed).
-  - The server emits each event to clients ONLY when its scheduled wall-clock
-    time arrives. Clients cannot see future events.
-  - The REST snapshot reflects only events that have already been replayed
-    up to the current position. A user who hits Play immediately gets the
-    pre-Play (empty) snapshot, then starts seeing diffs going forward.
-  - Event timestamps in the emitted WebSocket messages are rewritten to the
-    current wall clock so the frontend's existing Date.now()-based
-    `placedAt` / `trade.ts` comparisons work identically to live mode.
-    The original NT timestamp is exposed only through `/api/status` for
-    the play-bar's "replaying May 7 09:34 ET" label.
-  - Trade matching against placed orders is the simulator's own queue model
-    (in terminal.html). It only consumes events that arrive AFTER an order
-    is placed, so fills can never come from "future" market data.
+No lookahead: an event is emitted only once its scheduled wall-clock time
+arrives, and the snapshot only reflects what's already been replayed. Emitted
+timestamps are rewritten to "now" so the frontend's Date.now() comparisons work
+just like live; the original NT time is exposed via /api/status for the play-bar
+label. Fills only ever consume events that land after an order was placed.
 
-Usage
------
-  python3 backtest_server.py /path/to/nq_replay.jsonl
-  # then open http://localhost:8080/ in your browser
+    python server/backtest_server.py [path/to/replay.jsonl]
+    # then open http://localhost:8080/
 
-Defaults to ./paper_data/nq_replay.jsonl if no arg is given.
-
-Tested on Python 3.9+. Requires `aiohttp` (already in your requirements).
+Defaults to data/bfs_l2_export.jsonl. Needs aiohttp (in requirements).
 """
 from __future__ import annotations
 
@@ -59,17 +41,19 @@ try:
 except ImportError:                            # Python < 3.9 fallback
     ET = timezone.utc
 
-# ── Config ─────────────────────────────────────────────────────────────────
+# resolve web/ and data/ from __file__ so cwd doesn't matter
+REPO_ROOT = Path(__file__).resolve().parent.parent
+WEB_DIR = REPO_ROOT / "web"
+DATA_DIR = REPO_ROOT / "data"
+
 HOST = "127.0.0.1"
 PORT = 8080
-DEFAULT_FILE = "bfs_l2_export.jsonl"
-# Group depth events whose original ts is within this many ms of the previous
-# emitted event into one Binance depthUpdate message. Reduces WS frame count
-# without losing fidelity (frontend just sees a few price levels per message,
-# same as Binance's batched diffs).
+DEFAULT_FILE = str(DATA_DIR / "bfs_l2_export.jsonl")
+# batch depth events within this many ms into one depthUpdate message, like
+# Binance's own batched diffs. cuts WS frames, same info.
 DEPTH_BATCH_WINDOW_MS = 50
 
-# RTH (US equity index regular trading hours): 9:30am – 4:00pm ET, Mon–Fri.
+# RTH (US equity index regular trading hours): 9:30am - 4:00pm ET, Mon-Fri.
 RTH_START_MIN = 9 * 60 + 30        # 9:30 AM ET in minutes since midnight
 RTH_END_MIN   = 16 * 60            # 4:00 PM ET in minutes since midnight
 
@@ -80,7 +64,7 @@ INDEX_CACHE_VERSION = 2
 
 def is_rth_us(ts_ms: int) -> bool:
     """True if the timestamp falls inside US equity-index regular trading hours
-    (9:30 AM – 4:00 PM ET, Monday–Friday). DST handled by zoneinfo."""
+    (9:30 AM - 4:00 PM ET, Monday-Friday). DST handled by zoneinfo."""
     try:
         dt = datetime.fromtimestamp(ts_ms / 1000.0, tz=ET)
     except (ValueError, OSError):
@@ -92,7 +76,7 @@ def is_rth_us(ts_ms: int) -> bool:
 
 
 def derive_price_dec(tick_size: float) -> int:
-    """Number of decimals needed to represent the tick size. 0.25 → 2, 0.1 → 1."""
+    """Number of decimals needed to represent the tick size. 0.25 -> 2, 0.1 -> 1."""
     if tick_size <= 0:
         return 2
     # Strip trailing zeros from "0.25" representation
@@ -102,7 +86,7 @@ def derive_price_dec(tick_size: float) -> int:
     return 0
 
 
-# ── Mutable state ──────────────────────────────────────────────────────────
+# mutable state
 class ReplayState:
     """Single owner of all backtest state. Mutated only on the asyncio loop."""
 
@@ -119,21 +103,21 @@ class ReplayState:
         # When True, the next depth message broadcast is preceded by a full
         # book snapshot ("resync") so the frontend can rebuild its book from a
         # coherent baseline. Set after a seek, an RTH skip gap, or an rth_only
-        # toggle — any moment where the server has been mutating its own book
+        # toggle, any moment where the server has been mutating its own book
         # without broadcasting and the client's book is therefore stale.
         self.need_full_book = False
 
         # Cursors
         self.file_position = 0
         self.events_emitted = 0
-        self.original_first_ts: Optional[int] = None   # ms — first DATA event ts seen
-        self.original_current_ts: Optional[int] = None # ms — most recently emitted event ts
+        self.original_first_ts: Optional[int] = None   # ms, first DATA event ts seen
+        self.original_current_ts: Optional[int] = None # ms, most recently emitted event ts
 
         # Pacing anchors (re-set on each play/resume)
         self.anchor_wall_mono: Optional[float] = None  # monotonic seconds
         self.anchor_event_ts: Optional[int] = None     # event ms
 
-        # Reconstructed book — used only to serve REST snapshot requests
+        # Reconstructed book, used only to serve REST snapshot requests
         # to clients that connect mid-replay.
         self.bids: dict = {}
         self.asks: dict = {}
@@ -146,19 +130,19 @@ class ReplayState:
         self.depth_clients: Set[web.WebSocketResponse] = set()
         self.trade_clients: Set[web.WebSocketResponse] = set()
 
-        # Contract metadata — populated by pre_scan()
+        # Contract metadata, populated by pre_scan()
         self.instrument: str = "UNKNOWN"
         self.tick_size: float = 0.25
         self.is_futures: bool = True           # NQ etc. = futures (integer contracts, $/contract fees)
         self.symbol: str = "NQ"                # short symbol used on the wire
-        # Date index: UTC date string → byte offset of first event of that date.
+        # Date index: UTC date string -> byte offset of first event of that date.
         self.date_index: Dict[str, int] = {}
-        # RTH index: UTC date string → byte offset of the first US-RTH event of
+        # RTH index: UTC date string -> byte offset of the first US-RTH event of
         # that date (9:30 AM ET). Lets Seek jump straight to the RTH open in
         # rth_only mode instead of grinding through ~13h of overnight events.
         self.rth_index: Dict[str, int] = {}
 
-    # Repace from "now" — call on play/resume so wall-clock pacing resumes
+    # Repace from "now", call on play/resume so wall-clock pacing resumes
     # from the current event position without trying to "catch up" the
     # paused gap.
     def reset_pacing(self) -> None:
@@ -169,7 +153,7 @@ class ReplayState:
 STATE: Optional[ReplayState] = None  # set in main()
 
 
-# ── Helpers ────────────────────────────────────────────────────────────────
+# helpers
 def now_ms() -> int:
     return int(time.time() * 1000)
 
@@ -190,7 +174,7 @@ def parse_line(raw_bytes: bytes) -> Optional[dict]:
         return None
 
 
-# ── Book maintenance ───────────────────────────────────────────────────────
+# book maintenance
 def apply_depth_to_book(state: ReplayState, side: str, op: str, px: float, qty: float) -> None:
     """Apply an NT depth event to the in-memory book. This is the ground-truth
     book the server uses to answer /api/v3/depth snapshot requests."""
@@ -201,9 +185,9 @@ def apply_depth_to_book(state: ReplayState, side: str, op: str, px: float, qty: 
         target[px] = qty
 
 
-# ── Binance-shape message builders ─────────────────────────────────────────
+# binance-shape message builders
 def _fmt_num(x: float) -> str:
-    """Binance-style trimmed decimal string. Empty result → '0'."""
+    """Binance-style trimmed decimal string. Empty result -> '0'."""
     s = format(x, ".8f").rstrip("0").rstrip(".")
     return s if s else "0"
 
@@ -287,8 +271,8 @@ def build_trade_msg(state: ReplayState, ev: dict, market_ts: int) -> Optional[di
         return None
     state.agg_seq += 1
     wall = now_ms()
-    # Binance `m` = isBuyerMaker. NT side=BUY → aggressive buyer → buyer is
-    # taker → `m`=false. NT side=SELL → aggressive seller → buyer is maker → `m`=true.
+    # Binance `m` = isBuyerMaker. NT side=BUY -> aggressive buyer -> buyer is
+    # taker -> `m`=false. NT side=SELL -> aggressive seller -> buyer is maker -> `m`=true.
     is_buyer_maker = ev.get("side") == "SELL"
     return {
         "e": "aggTrade",
@@ -365,7 +349,7 @@ def _fast_type(raw: bytes) -> Optional[bytes]:
 
 def _rth_window_ms(date_str: str) -> Optional[Tuple[int, int]]:
     """For a UTC date string 'YYYY-MM-DD', return (rth_start_ms, rth_end_ms)
-    for that calendar date's 9:30am–4:00pm ET session, or None on weekends.
+    for that calendar date's 9:30am-4:00pm ET session, or None on weekends.
     DST handled by zoneinfo. Computed once per date during the pre-scan."""
     try:
         y, m, d = (int(x) for x in date_str.split("-"))
@@ -373,7 +357,7 @@ def _rth_window_ms(date_str: str) -> Optional[Tuple[int, int]]:
         end = datetime(y, m, d, 16, 0, 0, tzinfo=ET)
     except (ValueError, OverflowError):
         return None
-    if start.weekday() >= 5:               # Sat/Sun ET → no RTH session
+    if start.weekday() >= 5:               # Sat/Sun ET -> no RTH session
         return None
     return int(start.timestamp() * 1000), int(end.timestamp() * 1000)
 
@@ -431,8 +415,8 @@ def _save_index(state: ReplayState) -> None:
 def pre_scan(state: ReplayState) -> None:
     """One-time scan of the whole file at startup. Extracts the first meta
     event's instrument/tickSize and builds two byte-offset indexes:
-      - date_index: UTC date → first event of that date
-      - rth_index:  UTC date → first US-RTH event of that date (9:30 ET)
+      - date_index: UTC date -> first event of that date
+      - rth_index:  UTC date -> first US-RTH event of that date (9:30 ET)
     Results are cached to a sidecar file so subsequent startups load instantly
     (and rebuild automatically if the data file changes).
 
@@ -477,7 +461,7 @@ def pre_scan(state: ReplayState) -> None:
             etype = _fast_type(raw)
             if etype is None:
                 continue
-            if etype == b"m":                  # meta — rare; full parse is fine
+            if etype == b"m":                  # meta, rare; full parse is fine
                 if state.instrument == "UNKNOWN":
                     ev = parse_line(raw)
                     if ev is not None:
@@ -543,7 +527,7 @@ async def broadcast(clients: Set[web.WebSocketResponse], msg: dict) -> None:
         clients.discard(ws)
 
 
-# ── Replay loop ────────────────────────────────────────────────────────────
+# replay loop
 async def replay_task(state: ReplayState) -> None:
     """The single producer. Streams events from the JSONL, paces them by
     their original timestamps scaled by `state.speed`, and emits to all
@@ -593,7 +577,7 @@ async def replay_task(state: ReplayState) -> None:
                 state.need_full_book = True
                 print(f"[backtest] seeked to byte {target}")
 
-            # Wait while paused. Don't read ahead — lookahead-bias impossible:
+            # Wait while paused. Don't read ahead, lookahead-bias impossible:
             # nothing past `state.original_current_ts` is in memory until we
             # actually advance past it here.
             if not state.playing:
@@ -622,12 +606,12 @@ async def replay_task(state: ReplayState) -> None:
             ets = int(ets)
 
             # RTH-only filter: if enabled, silently advance through any event
-            # whose timestamp is outside US 9:30am–4:00pm ET.
+            # whose timestamp is outside US 9:30am-4:00pm ET.
             # We do still update the server-side book on skipped events so that
-            # when RTH resumes the snapshot reflects accurate state — i.e., we
+            # when RTH resumes the snapshot reflects accurate state, i.e., we
             # behave AS IF the strategy is sleeping during non-RTH but the
-            # market keeps moving. (For the user's stated goal — "run the
-            # strategy only during US regular hours" — the strategy panel will
+            # market keeps moving. (For the user's stated goal, "run the
+            # strategy only during US regular hours", the strategy panel will
             # see NO ticks during non-RTH and SEES the correct book at RTH open.)
             if state.rth_only and not is_rth_us(ets):
                 if etype == "depth":
@@ -708,21 +692,21 @@ async def replay_task(state: ReplayState) -> None:
             state.events_emitted += 1
 
 
-# ── HTTP / WebSocket handlers ──────────────────────────────────────────────
+# http / websocket handlers
 async def http_index(_req: web.Request) -> web.Response:
-    p = Path(__file__).parent / "backtest.html"
+    p = WEB_DIR / "backtest.html"
     if not p.exists():
-        return web.Response(text="backtest.html not found alongside backtest_server.py",
+        return web.Response(text="backtest.html not found under web/",
                              status=404)
     return web.FileResponse(p)
 
 
 async def http_strategy_file(req: web.Request) -> web.Response:
-    """Serve the OFP / MRV / AutoMM JS files from the project root."""
+    """Serve the OFP / MRV / AutoMM JS files from web/strategies/."""
     name = req.match_info["name"]
     if not name.endswith(".js") or "/" in name or ".." in name:
         return web.Response(status=400, text="bad filename")
-    p = Path(__file__).parent / name
+    p = WEB_DIR / "strategies" / name
     if not p.exists():
         return web.Response(status=404, text=f"no such strategy file: {name}")
     return web.FileResponse(p, headers={"Cache-Control": "no-cache"})
@@ -819,7 +803,7 @@ async def http_control(req: web.Request) -> web.Response:
                 "error": f"date not in index. Available: {sorted(s.date_index.keys())}"
             }, status=400)
         # In rth_only mode, jump straight to the first RTH event of the date
-        # (9:30 ET) instead of UTC midnight (~8pm ET prev day) — avoids reading
+        # (9:30 ET) instead of UTC midnight (~8pm ET prev day), avoids reading
         # through ~13h of overnight events to reach the RTH open.
         if s.rth_only and date_str in s.rth_index:
             s.seek_to = s.rth_index[date_str]
@@ -844,7 +828,7 @@ async def ws_depth(req: web.Request) -> web.WebSocketResponse:
         async for msg in ws:
             if msg.type == WSMsgType.ERROR:
                 break
-            # We ignore client→server messages; control is via /api/control.
+            # We ignore client->server messages; control is via /api/control.
     finally:
         STATE.depth_clients.discard(ws)
     return ws
@@ -863,12 +847,18 @@ async def ws_trade(req: web.Request) -> web.WebSocketResponse:
     return ws
 
 
-# ── App wiring ─────────────────────────────────────────────────────────────
+# app wiring
 def build_app() -> web.Application:
     app = web.Application()
     app.router.add_get("/", http_index)
     app.router.add_get("/backtest.html", http_index)
-    # Strategy JS files (OFP / MRV / AutoMM) served from project root
+    # Extracted front-end assets (backtest.html loads css/backtest.css + js/backtest.js).
+    app.router.add_static("/css/", WEB_DIR / "css")
+    app.router.add_static("/js/", WEB_DIR / "js")
+    # Strategy JS files (OFP / MRV / AutoMM) served from web/strategies/.
+    # backtest.html references them as "strategies/<name>.js"; the bare
+    # "/<name>.js" route is kept for backward compatibility.
+    app.router.add_get("/strategies/{name:[\\w_]+\\.js}", http_strategy_file)
     app.router.add_get("/{name:[\\w_]+\\.js}", http_strategy_file)
     # Binance-compat snapshot endpoints
     app.router.add_get("/api/v3/depth", http_snapshot)
@@ -876,7 +866,7 @@ def build_app() -> web.Application:
     # Backtest control
     app.router.add_get("/api/status", http_status)
     app.router.add_post("/api/control", http_control)
-    # WebSocket streams — match Binance URL pattern so backtest.html can
+    # WebSocket streams, match Binance URL pattern so backtest.html can
     # use the same code path. The `{sym}` is cosmetic; we ignore it and
     # always emit the loaded NT data.
     app.router.add_get(r"/ws/{sym}@depth", ws_depth)

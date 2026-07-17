@@ -1,14 +1,13 @@
 #!/usr/bin/env python3
 """
-make_candles.py — Build 1-second OHLCV candles (RTH only) from the NT JSONL and
-write them into candles.js for candle_viewer.html (TradingView Lightweight Charts).
+Build 1-second OHLCV candles (RTH only) from the NT JSONL and write them into
+candles.js for candle_viewer.html (TradingView Lightweight Charts).
 
-Candles are built from TRADE prices (open/high/low/close = trade px, volume =
-summed contracts) bucketed per UTC second, then the timestamp is shifted to ET
-wall-clock so the chart axis reads New-York time (DST handled per day).
+Candles come from trade prices bucketed per UTC second, then the timestamp is
+shifted to ET wall-clock so the axis reads New-York time (DST handled per day).
 
-Uses the RTH byte-offset index (<file>.btidx.json, written by backtest_server.py)
-to read only the RTH windows — fast. Falls back to a full scan if absent.
+Reads only the RTH windows via the byte-offset index (<file>.btidx.json from
+backtest_server.py).
 
 Usage:
   python3 make_candles.py [bfs_l2_export.jsonl] [--out candles.js]
@@ -24,6 +23,9 @@ import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Dict, List, Optional
+
+# data/ dir, relative to repo root
+DATA_DIR = Path(__file__).resolve().parent.parent / "data"
 
 try:
     from zoneinfo import ZoneInfo
@@ -79,7 +81,7 @@ def rth_end_ms(date_str: str) -> int:
 
 
 def build_day(f, off: int, end_ms: int, offset_sec: int) -> List[list]:
-    """Read one RTH window from offset to 16:00 ET; return [[t,o,h,l,c,v], ...]
+    """Read one RTH window (offset to 16:00 ET); return [[t,o,h,l,c,v], ...]
     where t is the candle's ET-shifted unix second."""
     buckets: Dict[int, list] = {}        # utc second -> [o,h,l,c,v]
     f.seek(off)
@@ -120,9 +122,9 @@ def build_day(f, off: int, end_ms: int, offset_sec: int) -> List[list]:
 
 def main() -> int:
     ap = argparse.ArgumentParser(description="Build 1s RTH candles -> candles.js")
-    ap.add_argument("file", nargs="?", default="bfs_l2_export.jsonl")
-    ap.add_argument("--out", default="candles.js", help="JS data file for the viewer")
-    ap.add_argument("--csv", default="candles.csv", help="CSV output (set '' to skip)")
+    ap.add_argument("file", nargs="?", default=str(DATA_DIR / "bfs_l2_export.jsonl"))
+    ap.add_argument("--out", default=str(DATA_DIR / "candles.js"), help="JS data file for the viewer")
+    ap.add_argument("--csv", default=str(DATA_DIR / "candles.csv"), help="CSV output (set '' to skip)")
     ap.add_argument("--start", default=None, help="first RTH date YYYY-MM-DD (inclusive)")
     ap.add_argument("--end", default=None, help="last RTH date YYYY-MM-DD (inclusive)")
     args = ap.parse_args()
@@ -187,8 +189,7 @@ def main() -> int:
             for day in days:
                 d = day["date"]
                 for t, o, h, l, c, v in day["candles"]:
-                    # `t` is the ET-shifted unix second, so reading it back as
-                    # UTC yields the ET wall-clock H:M:S.
+                    # t is ET-shifted, so reading it as UTC gives ET wall-clock
                     hms = datetime.fromtimestamp(t, tz=timezone.utc).strftime("%H:%M:%S")
                     fc.write(f"{d},{hms},{o},{h},{l},{c},{v}\n")
                     rows += 1

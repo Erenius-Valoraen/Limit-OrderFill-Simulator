@@ -1,0 +1,214 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>OFP Backtester (NT replay)</title>
+<link rel="stylesheet" href="css/backtest.css">
+</head>
+<body>
+<div id="app">
+
+  <div id="backtest-bar">
+    <button type="button" id="bt-play-btn">▶ Play</button>
+    <button type="button" id="bt-pause-btn" disabled>⏸ Pause</button>
+    <span class="bt-label">Speed</span>
+    <select id="bt-speed-select">
+      <option value="1">1× (true backtest)</option>
+      <option value="5">5×</option>
+      <option value="10">10×</option>
+      <option value="60">60×</option>
+      <option value="300">300×</option>
+    </select>
+    <label class="bt-label" style="display:flex;align-items:center;gap:4px;cursor:pointer">
+      <input type="checkbox" id="bt-rth" style="margin:0">RTH only
+    </label>
+    <span class="bt-label">Jump</span>
+    <select id="bt-seek-select" style="background:var(--bg2);border:1px solid var(--border2);color:var(--text0);font-family:var(--font);font-size:12px;padding:5px 8px;border-radius:3px;outline:none;cursor:pointer">
+      <option value="">— pick a date —</option>
+    </select>
+    <span class="bt-label">Replaying</span>
+    <span id="bt-date">— paused —</span>
+    <div id="bt-progress"><div id="bt-progress-fill"></div></div>
+    <span id="bt-progress-pct">0.000%</span>
+    <span id="bt-fidelity-note" title="At &gt;1× the strategy ticks per second of WALL time, not market time — interpret PnL with care.">SPEED &gt; 1× — strategy clock differs from market</span>
+  </div>
+
+  <div id="header">
+    <div id="conn-dot" class="connecting"></div>
+    <div id="header-sym">BTCUSDT</div>
+    <div class="h-sep"></div>
+    <div class="h-field">
+      <span class="h-label">Last</span>
+      <span class="h-val hdr-neutral" id="hdr-last">—</span>
+    </div>
+    <div class="h-sep"></div>
+    <div class="h-field">
+      <span class="h-label">Bid</span>
+      <span class="h-val hdr-bid" id="hdr-bid">—</span>
+    </div>
+    <div class="h-field">
+      <span class="h-label">Ask</span>
+      <span class="h-val hdr-ask" id="hdr-ask">—</span>
+    </div>
+    <div class="h-field">
+      <span class="h-label">Spread</span>
+      <span class="h-val" id="hdr-spread" style="color:var(--text1)">—</span>
+    </div>
+    <div class="h-sep"></div>
+    <div id="imb-wrap">
+      <span id="imb-label">Imbalance</span>
+      <div id="imb-bar-outer"><div id="imb-bar-inner" style="width:50%"></div></div>
+      <span id="imb-pct" style="color:var(--text1)">50%</span>
+    </div>
+    <div id="sym-input-wrap">
+      <label>Symbol</label>
+      <input id="sym-input" type="text" value="BTCUSDT" placeholder="BTCUSDT" autocomplete="off" spellcheck="false">
+    </div>
+  </div>
+
+  <div id="main-row">
+
+    <div id="book-panel">
+      <div class="panel-header">
+        <span class="panel-title">Order Book</span>
+        <button class="join-btn" id="join-ask-btn">▼ Join Ask</button>
+      </div>
+      <div id="book-content">
+        <div id="book-col-hdr">
+          <span class="book-col-hdr-label">Size</span>
+          <span class="book-col-hdr-label" style="text-align:center">Price</span>
+          <span class="book-col-hdr-label" style="text-align:right">Total</span>
+        </div>
+        <div id="asks-container">
+          <div class="book-rows" id="asks-rows"></div>
+        </div>
+        <div id="spread-row">
+          <span id="mid-price">—</span>
+          <span id="spread-val">—</span>
+          <span id="spread-pct"></span>
+        </div>
+        <div id="bids-container">
+          <div class="book-rows" id="bids-rows"></div>
+        </div>
+      </div>
+      <div class="panel-header" style="border-top:1px solid var(--border); border-bottom:none; justify-content:flex-end;">
+        <button class="join-btn" id="join-bid-btn">▲ Join Bid</button>
+      </div>
+    </div>
+
+    <div id="tape-panel">
+      <div class="panel-header">
+        <span class="panel-title">Trade Tape</span>
+        <span id="tape-count" style="font-size:9px; color:var(--text3)"></span>
+      </div>
+      <div class="tape-col-hdr">
+        <span>Time</span><span>Side</span><span>Price</span><span style="text-align:right">Qty</span>
+      </div>
+      <div id="tape-log"></div>
+    </div>
+
+    <div id="pos-panel">
+      <div class="panel-header">
+        <span class="panel-title">Positions</span>
+        <button id="clr-pos-btn">RESET</button>
+      </div>
+      <div class="pos-summary" id="pos-summary">
+        <div class="pos-summary-row">
+          <span class="pos-summary-label">Unrealized P&amp;L</span>
+          <span class="pos-summary-val pos-pnl-zero" id="pos-upnl-total">$0.00</span>
+        </div>
+        <div class="pos-stats-grid">
+          <div class="pos-stat">
+            <span class="pos-stat-lbl">Realized P&amp;L</span>
+            <span class="pos-stat-val" id="pos-rpnl-total">$0.00</span>
+          </div>
+          <div class="pos-stat">
+            <span class="pos-stat-lbl">Total P&amp;L</span>
+            <span class="pos-stat-val" id="pos-tpnl-total">$0.00</span>
+          </div>
+          <div class="pos-stat">
+            <span class="pos-stat-lbl">Open Positions</span>
+            <span class="pos-stat-val" id="pos-count">0</span>
+          </div>
+          <div class="pos-stat">
+            <span class="pos-stat-lbl">Closed P&amp;L</span>
+            <span class="pos-stat-val" id="pos-closed-count">0 trades</span>
+          </div>
+        </div>
+      </div>
+      <div id="pos-scroll">
+        <div id="pos-cards"></div>
+      </div>
+    </div>
+
+  </div>
+
+  <div id="chart-section">
+    <div id="chart-panel-header">
+      <span class="panel-title">Price Chart — <span id="chart-tf-label">5s</span></span>
+      <span id="chart-ohlc" style="font-size:10px; color:var(--text2); font-family:var(--font2)"></span>
+    </div>
+    <div id="chart-container"></div>
+  </div>
+
+  <div id="entry-bar">
+    <span class="entry-label">Side</span>
+    <select id="side-select" class="entry-input">
+      <option value="BUY">BUY</option>
+      <option value="SELL">SELL</option>
+    </select>
+    <span class="entry-label">Price</span>
+    <input id="price-input" class="entry-input" type="number" placeholder="0.00" step="0.01">
+    <span class="entry-label">Qty</span>
+    <input id="qty-input" class="entry-input" type="number" placeholder="1" step="1" min="1" value="1">
+    <div class="entry-sep"></div>
+    <button id="place-btn">Place Order</button>
+    <button id="cancel-btn">Cancel Selected</button>
+    <button id="cancel-all-btn">Cancel All</button>
+    <div class="entry-sep"></div>
+    <span class="entry-label">Strategy</span>
+    <select id="strategy-select" class="entry-input">
+      <option value="avellaneda">Avellaneda-Stoikov MM</option>
+      <option value="orderflow">Order-Flow Predictor</option>
+      <option value="meanreversion">Mean Reversion</option>
+    </select>
+    <select id="strategy-exec-select" class="entry-input">
+      <option value="limit">Limit</option>
+      <option value="market">Market</option>
+    </select>
+    <button id="strategy-start-btn">Start</button>
+    <button id="strategy-stop-btn" disabled>Stop</button>
+    <span class="entry-label" title="Per-contract $ for CME futures, % of notional for crypto">Fees $/contract</span>
+    <input id="maker-fee-input" class="entry-input" type="number" step="0.01" value="1.29" title="Maker fee ($/contract per side for futures; % of notional for crypto)">
+    <input id="taker-fee-input" class="entry-input" type="number" step="0.01" value="1.29" title="Taker fee ($/contract per side for futures; % of notional for crypto)">
+    <span class="entry-label">Latency</span>
+    <input id="latency-input" class="entry-input" type="number" step="10" min="0" max="2000" value="100" title="Simulated market-order round-trip latency in ms" style="width:58px">
+    <span class="entry-label" style="color:var(--text3);margin-left:-4px">ms</span>
+    <button id="save-trades-btn">Save Trades</button>
+    <button id="clear-saved-trades-btn">Clear Saved</button>
+    <button id="analysis-btn">Analysis</button>
+    <span id="entry-msg"></span>
+  </div>
+
+  <div id="blotter-section">
+    <div class="blotter-hdr" id="blotter-hdr-row">
+      <span>Order ID</span><span>Symbol</span><span>Side</span>
+      <span>Price</span><span>Qty</span><span>Filled</span>
+      <span>Status</span><span>Queue Ahead</span>
+    </div>
+    <div id="blotter-wrap"><div id="blotter-rows"></div></div>
+  </div>
+
+</div>
+
+<script src="https://unpkg.com/lightweight-charts@4.2.0/dist/lightweight-charts.standalone.production.js"></script>
+<script src="js/backtest/01-core.js"></script>
+<script src="js/backtest/02-engine.js"></script>
+<script src="js/backtest/03-ui.js"></script>
+<script src="js/backtest/04-main.js"></script>
+<script src="strategies/auto_market_maker.js"></script>
+<script src="strategies/orderflow_predictor_strategy.js"></script>
+<script src="strategies/mean_reversion_strategy.js"></script>
+</body>
+</html>
